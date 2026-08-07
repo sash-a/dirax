@@ -9,10 +9,12 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "jax>=0.10.0",
+    "flax>=0.8.1",
+    "optax>=0.2.4",
     "ray>=2.55.1",
     "gymnasium>=1.2.0",
     "numpy>2.0.0",
-    "echo>=0.2.0",
+    "id-echo>=0.2.0",
 ]
 
 [project.optional-dependencies]
