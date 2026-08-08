@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pre-commit>=4.0",
     "pytest>=7.0",
     "ruff>=0.6",
     "ty>=0.0.60"
@@ -34,3 +35,16 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 120
 
+[tool.ruff.lint]
+extend-select = ["TID"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.codespell]
+skip = "uv.lock,*.ipynb,.git,.venv,.ruff_cache"
+ignore-words-list = "re-use,nd,ba"

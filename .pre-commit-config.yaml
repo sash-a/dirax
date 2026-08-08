@@ -1,0 +1,58 @@
+default_install_hook_types: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        additional_dependencies: [tomli]
+
+  # Keeps uv.lock in step with pyproject.toml, so the --frozen hooks below stay valid.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.3
+    hooks:
+      - id: uv-lock
+
+  # ruff and ty run from the project venv: pyproject.toml pins their versions once,
+  # for hooks, CI and local runs alike, and ty type-checks against the real deps.
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen --extra dev ruff check --force-exclude --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen --extra dev ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ty
+        name: ty
+        entry: uv run --frozen --extra dev ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        always_run: true
+        require_serial: true
