@@ -4,7 +4,7 @@ import numpy as np
 import optax
 from numpy.typing import NDArray
 
-from brrrl.types import Params, PRNGKey
+from brrrl.types import ArrayTree, Params, PRNGKey
 
 
 class PPOOutput(NamedTuple):
@@ -16,7 +16,7 @@ class PPOOutput(NamedTuple):
 class PPOTransition(NamedTuple):
     """One step. Stacked to ``(T, N, ...)`` as the buffered timescale."""
 
-    observation: NDArray
+    observation: ArrayTree
     action: NDArray
     reward: NDArray[np.float32]
     terminated: NDArray[np.bool_]

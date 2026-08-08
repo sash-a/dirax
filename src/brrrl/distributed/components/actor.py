@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from echo import TcpClient
 
 from brrrl.acting.roller import Roller
-from brrrl.logging.logger import Logger
+from brrrl.metrics.logger import MetricsSink
 
 
 @dataclass
@@ -13,6 +13,6 @@ class Actor:
 
     build_rollers: Callable[[], Sequence[Roller]]
     build_client: Callable[[], TcpClient]
-    logger: Logger
+    metrics: MetricsSink
 
     def run(self) -> None: ...

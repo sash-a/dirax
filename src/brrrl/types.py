@@ -1,15 +1,16 @@
-from collections.abc import Iterable, Mapping
-from typing import NamedTuple, Protocol
+from collections.abc import Mapping
+from typing import Any, NamedTuple, Protocol
 
 import jax
 import numpy as np
 from flax.typing import VariableDict
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 type Params = VariableDict
 type PRNGKey = jax.Array
 type Version = int
-type Metrics = dict[str, Iterable[float]]
+type Metrics = Mapping[str, ArrayLike]
+type NestedMetrics = Mapping[str, Any]
 type ArrayTree = NDArray | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
 
 

@@ -7,7 +7,7 @@ from numpy.typing import NDArray
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy
 from brrrl.algorithms.ppo.types import PPOLearnerState, PPOOutput, PPOTrajectory
-from brrrl.types import PRNGKey, Metrics
+from brrrl.types import Metrics, PRNGKey
 
 
 @dataclass

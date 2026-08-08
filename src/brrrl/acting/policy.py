@@ -5,7 +5,7 @@ from typing import Protocol
 from numpy.typing import NDArray
 
 from brrrl.acting.params import ParamSource
-from brrrl.types import PRNGKey, Params, Version, VersionedParams
+from brrrl.types import Params, PRNGKey, Version, VersionedParams
 
 
 class PolicyOutput(Protocol):
