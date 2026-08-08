@@ -5,6 +5,27 @@ single-process; distribution is added by wrapping it, never by changing it.
 
 ## Language
 
+### State
+
+**Store**:
+The thing that owns a piece of run state that is written and later read back — the
+live params. Exactly one exists per run, as an in-process type that a Ray-placed
+wrapper holds rather than reimplements.
+_Avoid_: Server, cache, manager, registry
+
+**Sink**:
+The write half of access to a Store, as a protocol the component holds. Carries a
+reference and at most a routing tag, never the state, so a local Store and one
+across the cluster are interchangeable to the caller.
+_Avoid_: Publisher, writer, emitter
+
+**Source**:
+The read half of access to a Store. Same rules as a Sink.
+_Avoid_: Getter, provider, client
+
+Only for state with both halves. One-way flows are not Sinks into Stores — see
+Metrics, which records into a Collector and never reads back.
+
 ### Data
 
 **Transition**:
@@ -94,3 +115,31 @@ _Avoid_: Policy server, actor server
 A named arrangement of Actors, Trainers, and inference servers across devices
 and hosts.
 _Avoid_: Architecture, layout, config
+
+### Metrics
+
+**Step**:
+The one x-axis every metric in a run is logged against: cumulative Transitions or
+steps or env steps produced by Actors. Every other clock — Version, transitions
+consumed — is a scalar logged alongside, never an axis.
+_Avoid_: log step, iteration
+
+**Metric recorder**:
+What a component holds to report metrics. Knows how many Transitions its metrics
+account for, never the Step, so a local recorder and one across the cluster are
+interchangeable.
+_Avoid_: Logger, sink, writer
+
+**Metric collector**:
+The one place metrics converge. Owns the Step and routes each Origin to its chain.
+_Avoid_: Store, aggregator, hub
+
+**Origin**:
+Which component emitted a batch of metrics. Selects its chain and names its
+namespace.
+_Avoid_: Source, tag, category
+
+**Processor**:
+A stage in a metric chain that transforms and forwards — namespacing, windowing.
+Implements the same protocol as the backend at the end of the chain.
+_Avoid_: Handler, filter, middleware

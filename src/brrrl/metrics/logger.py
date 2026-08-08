@@ -1,17 +1,8 @@
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Protocol
 
 from brrrl.metrics.accumulator import MetricAccumulator
 from brrrl.types import Metrics
-
-
-class Source(StrEnum):
-    """Where metrics came from. Routes to a logger chain and names the namespace."""
-
-    ACTOR = "actor"
-    LEARNER = "learner"
-    EVAL = "eval"
 
 
 class Logger(Protocol):
@@ -22,26 +13,8 @@ class Logger(Protocol):
         ...
 
 
-class MetricsSink(Protocol):
-    def log(self, metrics: Metrics, transitions: int = 0) -> None:
-        """Record metrics accounting for ``transitions`` environment steps."""
-        ...
-
-
 @dataclass
-class MetricCountingSink:
-    """Cumulative transitions are the step. Only Actors pass a nonzero count."""
-
-    logger: Logger
-    steps: int = 0
-
-    def log(self, metrics: Metrics, transitions: int = 0) -> None:
-        self.steps += transitions
-        self.logger.log(metrics, self.steps)
-
-
-@dataclass
-class NamespacedLogger:
+class NamespacedProcessor:
     prefix: str
     logger: Logger
 
@@ -53,7 +26,7 @@ class NamespacedLogger:
 
 
 @dataclass
-class WindowedLogger:
+class WindowedProcessor:
     """Folds records and emits their summary once every ``every`` steps."""
 
     logger: Logger

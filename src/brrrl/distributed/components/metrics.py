@@ -4,35 +4,32 @@ from dataclasses import dataclass
 import ray
 from ray.actor import ActorHandle
 
-from brrrl.metrics.logger import Logger, Source
+from brrrl.metrics.collector import MetricCollector, Origin
 from brrrl.types import Metrics
 
 
 @ray.remote
-class MetricsStore:
-    """The one place metrics are written from; the step clock lives here.
+class RayMetricCollector:
+    """Ray placement of the one collector; built here so the backend is never pickled.
 
     Single-threaded by design: Ray serialises every call, so the backend never
     sees concurrent writers and needs no lock of its own.
     """
 
-    def __init__(self, build_loggers: Callable[[], dict[Source, Logger]]) -> None:
-        self.loggers = build_loggers()
-        self.steps = 0
+    def __init__(self, build_collector: Callable[[], MetricCollector]) -> None:
+        self.collector = build_collector()
 
-    def log(self, source: Source, metrics: Metrics, transitions: int = 0) -> None:
-        self.steps += transitions
-        self.loggers[source].log(metrics, self.steps)
+    def collect(self, origin: Origin, metrics: Metrics, transitions: int = 0) -> None:
+        self.collector.collect(origin, metrics, transitions)
 
     def close(self) -> None:
-        for logger in self.loggers.values():
-            logger.close()
+        self.collector.close()
 
 
 @dataclass
-class RayMetricsSink:
-    store: ActorHandle
-    source: Source
+class RayMetricRecorder:
+    collector: ActorHandle
+    origin: Origin
 
-    def log(self, metrics: Metrics, transitions: int = 0) -> None:
-        self.store.log.remote(self.source, metrics, transitions)
+    def record(self, metrics: Metrics, transitions: int = 0) -> None:
+        self.collector.collect.remote(self.origin, metrics, transitions)

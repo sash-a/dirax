@@ -4,7 +4,7 @@ from echo import Server
 
 from brrrl.acting.params import ParamSink
 from brrrl.learning.learner import Learner
-from brrrl.metrics.logger import MetricsSink
+from brrrl.metrics.collector import MetricRecorder
 from brrrl.types import LearnerState, Trajectory
 
 
@@ -15,7 +15,7 @@ class Trainer[S: LearnerState, T: Trajectory]:
     learner: Learner[S, T]
     server: Server
     sink: ParamSink
-    metrics: MetricsSink
+    metrics: MetricRecorder
 
     def run(self) -> None:
         raise NotImplementedError
