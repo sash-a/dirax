@@ -8,13 +8,19 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    # JAX libs
     "jax>=0.10.0",
     "flax>=0.8.1",
     "optax>=0.2.4",
-    "ray>=2.55.1",
-    "gymnasium>=1.2.0",
+    "orbax-checkpoint>=0.12.0",
+    # Number libs
     "numpy>2.0.0",
+    # Distributed libs
+    "ray>=2.55.1",
     "id-echo>=0.2.0",
+    # RL libs
+    "gymnasium>=1.2.0",
+    # Other
     "etils[epath]>=1.14.0",
 ]
 
