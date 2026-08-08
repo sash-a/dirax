@@ -143,3 +143,9 @@ _Avoid_: Source, tag, category
 A stage in a metric chain that transforms and forwards — namespacing, windowing.
 Implements the same protocol as the backend at the end of the chain.
 _Avoid_: Handler, filter, middleware
+
+**Artifact**:
+A file or directory belonging to a run — a checkpoint, a video, a config. Rides
+the same chain as Metrics and takes the same namespace, but is filed under a
+directory rather than logged against the Step: it names a place, not a moment.
+_Avoid_: File, asset, output

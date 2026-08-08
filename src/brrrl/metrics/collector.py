@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from etils import epath
+
 from brrrl.metrics.logger import Logger
 from brrrl.types import Metrics
 
@@ -19,6 +21,10 @@ class MetricRecorder(Protocol):
         """Report metrics accounting for ``transitions`` environment steps."""
         ...
 
+    def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
+        """File the artifact at ``path`` under ``directory``. Carries no Step; it names a place, not a moment."""
+        ...
+
 
 @dataclass
 class MetricCollector:
@@ -34,6 +40,9 @@ class MetricCollector:
         self.steps += transitions
         self.loggers[origin].log(metrics, self.steps)
 
+    def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None = None) -> None:
+        self.loggers[origin].log_artifact(path, directory)
+
     def close(self) -> None:
         for logger in self.loggers.values():
             logger.close()
@@ -46,3 +55,6 @@ class LocalMetricRecorder:
 
     def record(self, metrics: Metrics, transitions: int = 0) -> None:
         self.collector.collect(self.origin, metrics, transitions)
+
+    def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
+        self.collector.collect_artifact(self.origin, path, directory)

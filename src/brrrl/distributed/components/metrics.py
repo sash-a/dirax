@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import ray
+from etils import epath
 from ray.actor import ActorHandle
 
 from brrrl.metrics.collector import MetricCollector, Origin
@@ -22,6 +23,9 @@ class RayMetricCollector:
     def collect(self, origin: Origin, metrics: Metrics, transitions: int = 0) -> None:
         self.collector.collect(origin, metrics, transitions)
 
+    def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None = None) -> None:
+        self.collector.collect_artifact(origin, path, directory)
+
     def close(self) -> None:
         self.collector.close()
 
@@ -33,3 +37,7 @@ class RayMetricRecorder:
 
     def record(self, metrics: Metrics, transitions: int = 0) -> None:
         self.collector.collect.remote(self.origin, metrics, transitions)
+
+    def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
+        """Only the path crosses the wire, so it must resolve on the collector's node."""
+        self.collector.collect_artifact.remote(self.origin, path, directory)

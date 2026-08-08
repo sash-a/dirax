@@ -16,8 +16,8 @@ record  →  collect  →  log
 
 | | Who implements it | Who calls it |
 |---|---|---|
-| `MetricRecorder.record(metrics, transitions=0)` | `LocalMetricRecorder`, `RayMetricRecorder` | components |
-| `Logger.log(metrics, step)` + `close()` | processors and backends | the collector |
+| `MetricRecorder.record(metrics, transitions=0)` + `record_artifact(path, directory=None)` | `LocalMetricRecorder`, `RayMetricRecorder` | components |
+| `Logger.log(metrics, step)` + `log_artifact(path, directory=None)` + `close()` | processors and backends | the collector |
 
 A component holds a `MetricRecorder` and never learns the Step. It reports how far it
 moved the world — `transitions` — and only Actors move it, so everyone else omits the
@@ -90,6 +90,36 @@ collision rather than silently dropping one:
 ```python
 flatten({"episode": {"return": [1.0, 3.0]}})   # {"episode/return": [1.0, 3.0]}
 ```
+
+Backends store one float per key. `scalars` means a multi-element value — an unwindowed
+chain lands what a windowed one would have — and drops empty ones rather than logging
+nan.
+
+## Artifacts
+
+Files belonging to the run — checkpoints, videos, a config — go through the same chain
+and get the same namespace, but carry no Step: a directory names a place, not a moment.
+
+```python
+self.metrics.record_artifact(epath.Path("checkpoints/step_1000"))   # learner/step_1000
+self.metrics.record_artifact(epath.Path("rollout.mp4"), "videos")   # eval/videos/rollout.mp4
+```
+
+A component records, the collector collects, a logger logs — artifacts take each layer's
+verb exactly as metrics do, so no recorder can structurally satisfy `Logger`.
+
+Paths are `epath.Path`, so `gs://` and `s3://` are ordinary arguments rather than a
+separate code path. W&B stores a remote one as a reference; mlflow uploads from local
+disk and will reject it.
+
+Directories are stored whole. `WindowedProcessor` passes artifacts straight through —
+there is nothing to fold. `RayMetricRecorder` ships only the path, so it has to resolve
+on the collector's node: write to shared storage, or run the collector where the files
+are.
+
+W&B has no directories inside an artifact, so the destination folds into the artifact
+name with dashes (`eval/videos/rollout.mp4` → `eval-videos-rollout.mp4`); logging the
+same name again is a new version of it.
 
 ## Shutdown
 

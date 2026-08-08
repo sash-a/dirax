@@ -15,14 +15,22 @@ dependencies = [
     "gymnasium>=1.2.0",
     "numpy>2.0.0",
     "id-echo>=0.2.0",
+    "etils[epath]>=1.14.0",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "brrrl[mlflow,wandb]",
     "pre-commit>=4.0",
     "pytest>=7.0",
     "ruff>=0.6",
     "ty>=0.0.60"
+]
+mlflow = [
+    "mlflow>=3.0",
+]
+wandb = [
+    "wandb>=0.19",
 ]
 
 [project.scripts]
@@ -47,4 +55,4 @@ addopts = "--strict-markers --strict-config"
 
 [tool.codespell]
 skip = "uv.lock,*.ipynb,.git,.venv,.ruff_cache"
-ignore-words-list = "re-use,nd,ba"
+ignore-words-list = "re-use,nd,ba,meaned"
