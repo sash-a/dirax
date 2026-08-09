@@ -23,6 +23,12 @@ _Avoid_: Publisher, writer, emitter
 The read half of access to a Store. Same rules as a Sink.
 _Avoid_: Getter, provider, client
 
+**Mirror**:
+A Source holding a copy of a Store's state, refreshed on its own cadence so many
+readers share one round trip. Interchangeable with the Store to a reader, and adds
+a second hop to staleness.
+_Avoid_: Cache, replica, proxy, local store
+
 Only for state with both halves. One-way flows are not Sinks into Stores — see
 Metrics, which records into a Collector and never reads back.
 
@@ -116,7 +122,13 @@ between the Version a Trajectory was acted under and the Trainer's current
 Version is its staleness.
 _Avoid_: Step, iteration, epoch
 
-### Placement
+### Components
+
+**Component**:
+A class Ray places as its own process. Declares the Ray behaviour options its own
+correctness depends on, and nothing about where it lands — that is the caller's
+Placement.
+_Avoid_: Remote, worker, service
 
 **Actor**:
 Runs Rollers and ships their Trajectories. Contains no algorithm logic — only
@@ -139,9 +151,25 @@ envs. Owns its parameters, so its clients never handle them.
 _Avoid_: Policy server, actor server
 
 **Topology**:
-A named arrangement of Actors, Trainers, and inference servers across devices
-and hosts.
+A named arrangement of Actors, Trainers, and inference servers — how many of
+each and how they are wired. Says nothing about which host anything lands on, so
+one Topology runs on any cluster.
 _Avoid_: Architecture, layout, config
+
+**Placement**:
+What one role's processes ask the scheduler for, and where they may land.
+Supplied by the caller, because only their cluster knows what a name like
+"learner" means. Empty by default, so a run that names no Placement lands
+wherever Ray will take it.
+_Avoid_: Resources, slot, allocation
+
+**Gang**:
+A set of Components that must be placed together or not at all — Trainer shards
+forming one JAX process group, or an inference server and the Actors it serves.
+Reserved as one unit, and each member's position in it is that member's stable
+identity. Actors at large are not a Gang: a run with fewer of them works, just
+slower.
+_Avoid_: Group, cohort, bundle
 
 ### Metrics
 

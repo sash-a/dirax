@@ -1,5 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
 import jax
 import ray
@@ -7,10 +8,10 @@ from etils import epath
 from ray.actor import ActorHandle
 
 from brrrl.checkpointing.checkpointer import Checkpointer, Config, State
+from brrrl.distributed.placement.component import Behaviour
 from brrrl.types import Metrics
 
 
-@ray.remote
 class CheckpointStore:
     """The one place checkpoints land; learner writes, a resume reads.
 
@@ -18,6 +19,13 @@ class CheckpointStore:
     Single-threaded by design: Ray serialises every call, so saves land in the order they were posted.
     Built from a factory so the backend, which owns files and threads, is never pickled.
     """
+
+    RAY_OPTIONS: ClassVar[Behaviour] = {
+        "max_concurrency": 1,
+        "max_task_retries": 0,
+        "allow_out_of_order_execution": False,
+    }
+    """Fire-and-forget saves rest on ordering, and a retried actor task is always executed out of order."""
 
     def __init__(self, build_checkpointer: Callable[[], Checkpointer]) -> None:
         self.checkpointer = build_checkpointer()

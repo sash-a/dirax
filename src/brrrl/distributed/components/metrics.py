@@ -1,21 +1,24 @@
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import ClassVar
 
-import ray
 from etils import epath
 from ray.actor import ActorHandle
 
+from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricCollector, Origin
 from brrrl.types import Metrics
 
 
-@ray.remote
 class RayMetricCollector:
     """Ray placement of the one collector; built here so the backend is never pickled.
 
     Single-threaded by design: Ray serialises every call, so the backend never
     sees concurrent writers and needs no lock of its own.
     """
+
+    RAY_OPTIONS: ClassVar[Behaviour] = {"max_concurrency": 1}
+    """The backend is written without a lock, so a second thread would race it."""
 
     def __init__(self, build_collector: Callable[[], MetricCollector]) -> None:
         self.collector = build_collector()

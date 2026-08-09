@@ -1,15 +1,18 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
-import ray
 from ray.actor import ActorHandle
 
 from brrrl.acting.policy import LocalPolicy, PolicyOutput
+from brrrl.distributed.placement.component import Behaviour
 from brrrl.types import PRNGKey, Version
 
 
-@ray.remote
 class InferenceServer[Obs, O: PolicyOutput]:
     """A `LocalPolicy` behind RPC; refreshes params on its own cadence."""
+
+    RAY_OPTIONS: ClassVar[Behaviour] = {}
+    """Its concurrency plausibly scales with the cohort it serves, which a constant cannot express."""
 
     def __init__(self, policy: LocalPolicy[Obs, O]) -> None:
         raise NotImplementedError
