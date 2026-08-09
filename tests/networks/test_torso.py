@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brrrl.networks.torso import ImpalaCNNTorso, MLPTorso, NatureCNNTorso
+from brrrl.networks.torso import CNNTorso, MLPTorso, ResidualCNNTorso
 
 NUM_ENVS = 4
 OBS_FEATURES = 8
@@ -67,8 +67,8 @@ class ConvTorso(NamedTuple):
 
 
 CONV_TORSOS = [
-    pytest.param(ConvTorso(NatureCNNTorso, NATURE_FRAME, NATURE_EMBEDDING), id="nature"),
-    pytest.param(ConvTorso(ImpalaCNNTorso, IMPALA_FRAME, IMPALA_EMBEDDING), id="impala"),
+    pytest.param(ConvTorso(CNNTorso, NATURE_FRAME, NATURE_EMBEDDING), id="nature"),
+    pytest.param(ConvTorso(ResidualCNNTorso, IMPALA_FRAME, IMPALA_EMBEDDING), id="impala"),
 ]
 
 

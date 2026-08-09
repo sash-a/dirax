@@ -1,3 +1,4 @@
+# A few simple network building blocks for the most common environments
 import math
 from collections.abc import Callable, Sequence
 from typing import final
@@ -40,12 +41,10 @@ class MLPTorso(nn.Module):
         layer_sizes: Width of each Dense layer, in order.
         activation: Applied after every layer.
         normalisation: Builds the layer normalising each output before it is activated, so any
-            Flax norm fits — ``nn.LayerNorm``, ``nn.RMSNorm``, ``partial(nn.GroupNorm, ...)``.
+            Flax norm fits: ``nn.LayerNorm``, ``nn.RMSNorm``, ``partial(nn.GroupNorm, ...)``.
             It builds rather than is one so that each layer gets its own params.
-        kernel_init: Root-two gain suits the default ReLU. An activation that wants another —
-            5/3 for tanh — takes a different one, since no gain follows from a callable.
-        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
-            has no half-precision kernel, so reach for ``dtype`` rather than this one.
+        kernel_init: Root-two gain suits the default ReLU. Tanh wants 5/3 so it is configurable.
+        param_dtype: Dtype params are stored in.
         dtype: Dtype the layers compute in, promoted from the inputs and params when None.
     """
 
@@ -71,43 +70,18 @@ class MLPTorso(nn.Module):
         return embedding
 
 
-def convolution(
-    channels: int,
-    kernel: tuple[int, int],
-    strides: tuple[int, int],
-    padding: str,
-    kernel_init: Initializer,
-    param_dtype: Dtype,
-    dtype: Dtype | None,
-) -> nn.Conv:
-    """A Torso's convolution."""
-    return nn.Conv(
-        channels,
-        kernel,
-        strides,
-        padding=padding,
-        kernel_init=kernel_init,
-        param_dtype=param_dtype,
-        dtype=dtype,
-    )
-
-
 def flatten(embedding: jax.Array) -> jax.Array:
     """Collapse an image's height, width and channel axes into one embedding axis.
 
     The only shape collapse in the package. It leaves the leading axes untouched, so acting at
-    ``(Lane, ...)`` and learning at ``(time, Lane, ...)`` still call the identical module.
+    ``(E, ...)`` and learning at ``(T, E, ...)`` still call the identical module.
     """
     return embedding.reshape(*embedding.shape[:-3], -1)
 
 
 @final
-class NatureCNNTorso(nn.Module):
+class CNNTorso(nn.Module):
     """The Nature-DQN convolutional stack, mapping a pixel observation to a flat embedding.
-
-    Channel counts, kernel sizes and strides are the published ones and are not knobs: a
-    stack with different ones is not this architecture. It ends at the flatten, so the
-    published network's 512-unit fully-connected layer is an ``MLPTorso`` composed after it.
 
     Attributes:
         activation: Applied after every convolution.
@@ -128,22 +102,26 @@ class NatureCNNTorso(nn.Module):
     def __call__(self, observation: jax.Array) -> jax.Array:
         embedding = observation
         for channels, kernel, strides in NATURE_STACK:
-            embedding = convolution(channels, kernel, strides, "VALID", self.kernel_init, self.param_dtype, self.dtype)(
-                embedding
-            )
+            embedding = nn.Conv(
+                channels,
+                kernel,
+                strides,
+                padding="VALID",
+                kernel_init=self.kernel_init,
+                param_dtype=self.param_dtype,
+                dtype=self.dtype,
+            )(embedding)
             embedding = self.normalisation(param_dtype=self.param_dtype, dtype=self.dtype)(embedding)
             embedding = self.activation(embedding)
         return flatten(embedding)
 
 
 @final
-class ImpalaCNNTorso(nn.Module):
+class ResidualCNNTorso(nn.Module):
     """The IMPALA residual convolutional stack, mapping a pixel observation to a flat embedding.
 
     Each block is a convolution and a max-pool followed by ``num_residual_units`` residual
-    units, every convolution three by three at unit stride. It ends at the same ``flatten``
-    the Nature stack uses, so the published network's 256-unit fully-connected layer is an
-    ``MLPTorso`` composed after it.
+    units, every convolution three by three at unit stride.
 
     Attributes:
         channel_sizes: Width of each block, in order. The published deep architecture by default.
@@ -175,9 +153,15 @@ class ImpalaCNNTorso(nn.Module):
         return flatten(self.activation(embedding))
 
     def convolve(self, channels: int, embedding: jax.Array) -> jax.Array:
-        convolved = convolution(channels, KERNEL, STRIDE, "SAME", self.kernel_init, self.param_dtype, self.dtype)(
-            embedding
-        )
+        convolved = nn.Conv(
+            channels,
+            KERNEL,
+            STRIDE,
+            padding="SAME",
+            kernel_init=self.kernel_init,
+            param_dtype=self.param_dtype,
+            dtype=self.dtype,
+        )(embedding)
         return self.normalisation(param_dtype=self.param_dtype, dtype=self.dtype)(convolved)
 
     def residual_unit(self, channels: int, embedding: jax.Array) -> jax.Array:

@@ -18,7 +18,7 @@ import pytest
 import brrrl.networks
 from brrrl.networks.distribution import TanhNormal
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
-from brrrl.networks.torso import ImpalaCNNTorso, MLPTorso, NatureCNNTorso
+from brrrl.networks.torso import CNNTorso, MLPTorso, ResidualCNNTorso
 
 NUM_ENVS = 4
 EMBEDDING = 8
@@ -75,8 +75,8 @@ PRIMITIVES = [
         Primitive(lambda **kw: ContinuousHead(num_actions=NUM_ACTIONS, **kw), embedding, loc_of), id="continuous"
     ),
     pytest.param(Primitive(lambda **kw: ValueHead(**kw), embedding, itself), id="value"),
-    pytest.param(Primitive(NatureCNNTorso, frame, itself), id="nature"),
-    pytest.param(Primitive(ImpalaCNNTorso, frame, itself), id="impala"),
+    pytest.param(Primitive(CNNTorso, frame, itself), id="nature"),
+    pytest.param(Primitive(ResidualCNNTorso, frame, itself), id="impala"),
 ]
 
 
