@@ -8,7 +8,7 @@ valid and isn't.
 
 ## Consequences
 
-`NEXT_STEP` costs one Trajectory slot per episode per lane: the step after a
+`NEXT_STEP` costs one Trajectory slot per episode per env: the step after a
 terminal has its action ignored and its reward zeroed. That slot needs masking,
 but no `mask` field — `terminated | truncated` at `t-1` already says so.
 

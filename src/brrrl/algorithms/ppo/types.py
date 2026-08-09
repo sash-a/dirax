@@ -14,7 +14,7 @@ class PPOOutput(NamedTuple):
 
 
 class PPOTransition(NamedTuple):
-    """One step. Stacked to ``(T, N, ...)`` as the buffered timescale."""
+    """One step. Stacked to ``(T, E, ...)`` as the buffered timescale."""
 
     observation: ArrayTree
     action: NDArray
@@ -42,6 +42,6 @@ class PPOLearnerState(NamedTuple):
     key: PRNGKey
 
 
-def example(num_steps: int, num_lanes: int, obs_shape: tuple[int, ...]) -> dict[str, Any]:
+def example(num_steps: int, num_envs: int, obs_shape: tuple[int, ...]) -> dict[str, Any]:
     """Zero-filled timescales; shared verbatim by the accumulator, client and server."""
     raise NotImplementedError

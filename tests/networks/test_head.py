@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 
-NUM_LANES = 4
+NUM_ENVS = 4
 EMBEDDING = 8
 NUM_ACTIONS = 4
 LEGAL, ILLEGAL = 0, 1
@@ -43,7 +43,7 @@ def test_discrete_head_starts_near_uniform_from_its_hundredth_policy_gain(
     distrax normalises the logits it is handed, so the kernel is not recoverable through them
     and the gain is asserted through its consequence. Root-two here would be nowhere near.
     """
-    distribution = apply_module(DiscreteHead(num_actions=NUM_ACTIONS), jnp.ones((NUM_LANES, EMBEDDING)))
+    distribution = apply_module(DiscreteHead(num_actions=NUM_ACTIONS), jnp.ones((NUM_ENVS, EMBEDDING)))
 
     assert jnp.allclose(distribution.probs, 1.0 / NUM_ACTIONS, atol=0.015)
 
@@ -76,7 +76,7 @@ def test_masked_head_applies_at_both_layouts(leading: tuple[int, ...], apply_mod
 
 
 def test_masked_head_never_samples_a_masked_action(apply_module: Callable[..., Any]) -> None:
-    leading = (NUM_LANES,)
+    leading = (NUM_ENVS,)
     distribution = apply_module(
         MaskedDiscreteHead(num_actions=NUM_ACTIONS), jnp.ones((*leading, EMBEDDING)), action_mask(leading)
     )
@@ -89,7 +89,7 @@ def test_masked_head_never_samples_a_masked_action(apply_module: Callable[..., A
 
 def test_a_masked_action_has_a_log_probability_of_negative_infinity(apply_module: Callable[..., Any]) -> None:
     """So it contributes nothing to any gradient."""
-    leading = (NUM_LANES,)
+    leading = (NUM_ENVS,)
     distribution = apply_module(
         MaskedDiscreteHead(num_actions=NUM_ACTIONS), jnp.ones((*leading, EMBEDDING)), action_mask(leading)
     )
@@ -102,7 +102,7 @@ def test_a_masked_action_has_a_log_probability_of_negative_infinity(apply_module
 
 
 def test_masked_head_entropy_is_finite_while_one_action_is_legal(apply_module: Callable[..., Any]) -> None:
-    leading = (NUM_LANES,)
+    leading = (NUM_ENVS,)
     one_legal = jnp.zeros((*leading, NUM_ACTIONS), bool).at[..., LEGAL].set(True)
 
     for mask in (action_mask(leading), one_legal):
@@ -136,7 +136,7 @@ def test_continuous_head_exposes_the_base_location_and_scale(
 
 
 def test_continuous_head_samples_strictly_inside_the_interval(apply_module: Callable[..., Any]) -> None:
-    distribution = apply_module(ContinuousHead(num_actions=NUM_ACTIONS), jnp.ones((NUM_LANES, EMBEDDING)))
+    distribution = apply_module(ContinuousHead(num_actions=NUM_ACTIONS), jnp.ones((NUM_ENVS, EMBEDDING)))
 
     action = distribution.sample(seed=jax.random.key(0), sample_shape=1000)
 

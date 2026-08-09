@@ -23,7 +23,7 @@ class InferenceServer[Obs, O: PolicyOutput]:
 
 @dataclass
 class InferenceServerPolicy[Obs, O: PolicyOutput]:
-    """Client half. Coalesces concurrent lane requests into one batched call."""
+    """Client half. Coalesces concurrent env requests into one batched call."""
 
     server: ActorHandle
 

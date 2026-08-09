@@ -9,7 +9,7 @@ import pytest
 
 from brrrl.networks.torso import ImpalaCNNTorso, MLPTorso, NatureCNNTorso
 
-NUM_LANES = 4
+NUM_ENVS = 4
 OBS_FEATURES = 8
 EMBEDDING = 8
 
@@ -28,13 +28,13 @@ def test_mlp_accepts_an_arbitrary_callable_as_its_activation(apply_module: Calla
     """Not a string looked up in a table, so no activation is out of reach."""
     torso = MLPTorso(layer_sizes=(6,), activation=lambda x: jnp.full_like(x, 3.0))
 
-    embedding = apply_module(torso, jnp.ones((NUM_LANES, OBS_FEATURES)))
+    embedding = apply_module(torso, jnp.ones((NUM_ENVS, OBS_FEATURES)))
 
     assert (embedding == 3.0).all()
 
 
 def test_mlp_normalises_each_embedding_only_when_given_a_normalisation(apply_module: Callable[..., Any]) -> None:
-    observation = 5.0 * jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES))
+    observation = 5.0 * jax.random.normal(jax.random.key(1), (NUM_ENVS, OBS_FEATURES))
 
     normalised = apply_module(MLPTorso(layer_sizes=(16,), activation=identity, normalisation=nn.LayerNorm), observation)
     plain = apply_module(MLPTorso(layer_sizes=(16,), activation=identity), observation)
@@ -90,7 +90,7 @@ def test_conv_torso_flattens_to_the_published_embedding_at_both_layouts(
 def test_conv_torso_accepts_an_arbitrary_callable_as_its_activation(
     torso: ConvTorso, apply_module: Callable[..., Any]
 ) -> None:
-    flat = apply_module(torso.build(activation=lambda x: jnp.full_like(x, 3.0)), frames((NUM_LANES,), torso.pixels))
+    flat = apply_module(torso.build(activation=lambda x: jnp.full_like(x, 3.0)), frames((NUM_ENVS,), torso.pixels))
 
     assert (flat == 3.0).all()
 
@@ -99,7 +99,7 @@ def test_conv_torso_accepts_an_arbitrary_callable_as_its_activation(
 def test_conv_torso_normalisation_takes_the_input_scale_out_of_the_embedding(
     torso: ConvTorso, apply_module: Callable[..., Any]
 ) -> None:
-    loud = frames((NUM_LANES,), torso.pixels, scale=100.0)
+    loud = frames((NUM_ENVS,), torso.pixels, scale=100.0)
 
     normalised = apply_module(torso.build(normalisation=nn.LayerNorm), loud)
     plain = apply_module(torso.build(), loud)
@@ -117,21 +117,21 @@ def test_any_stateless_normalisation_can_be_passed_in(
 ) -> None:
     torso = MLPTorso(layer_sizes=(16,), activation=identity, normalisation=normalisation)
 
-    embedding = apply_module(torso, 5.0 * jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES)))
+    embedding = apply_module(torso, 5.0 * jax.random.normal(jax.random.key(1), (NUM_ENVS, OBS_FEATURES)))
 
-    assert embedding.shape == (NUM_LANES, 16)
+    assert embedding.shape == (NUM_ENVS, 16)
     assert (jnp.abs(embedding) < 5.0).all()
 
 
 def test_a_stateful_normalisation_can_be_passed_in_bound_up_front() -> None:
     """Batch statistics land in their own collection, which is the caller's to thread."""
     torso = MLPTorso(layer_sizes=(16,), normalisation=partial(nn.BatchNorm, use_running_average=False))
-    observation = jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES))
+    observation = jax.random.normal(jax.random.key(1), (NUM_ENVS, OBS_FEATURES))
 
     variables = torso.init(jax.random.key(0), observation)
     embedding, updates = torso.apply(variables, observation, mutable=["batch_stats"])
 
-    assert embedding.shape == (NUM_LANES, 16)
+    assert embedding.shape == (NUM_ENVS, 16)
     assert "batch_stats" in variables
     assert "batch_stats" in updates
 

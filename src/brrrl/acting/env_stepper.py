@@ -15,7 +15,7 @@ type StepResult[Obs] = tuple[
 
 
 class EnvStepper[Obs, Act](Protocol):
-    """The gymnasium step API, with a leading lane axis on every field."""
+    """The gymnasium step API, with a leading env axis on every field."""
 
     def reset(self) -> tuple[Obs, dict[str, Any]]: ...
 
@@ -24,7 +24,7 @@ class EnvStepper[Obs, Act](Protocol):
 
 @dataclass
 class GymStepper[Obs, Act]:
-    """One `gym.Env` presented as a single lane: ``N = 1``."""
+    """One `gym.Env` presented as a single env: ``E = 1``."""
 
     env: gym.Env
 

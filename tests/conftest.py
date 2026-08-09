@@ -6,14 +6,14 @@ import jax
 import pytest
 
 NUM_STEPS = 3
-NUM_LANES = 4
+NUM_ENVS = 4
 
 
-@pytest.fixture(params=[(NUM_LANES,), (NUM_STEPS, NUM_LANES)], ids=["act", "learn"])
+@pytest.fixture(params=[(NUM_ENVS,), (NUM_STEPS, NUM_ENVS)], ids=["act", "learn"])
 def leading(request: pytest.FixtureRequest) -> tuple[int, ...]:
     """The two leading-axis layouts every primitive must accept unchanged.
 
-    ``(Lane,)`` is what a Roller applies at act time; ``(time, Lane)`` is what a Learner
+    ``(E,)`` is what a Roller applies at act time; ``(T, E)`` is what a Learner
     applies over a Trajectory. A primitive that needs reshaping between them fails here.
     """
     return request.param

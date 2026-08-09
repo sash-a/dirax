@@ -20,7 +20,7 @@ from brrrl.networks.distribution import TanhNormal
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import ImpalaCNNTorso, MLPTorso, NatureCNNTorso
 
-NUM_LANES = 4
+NUM_ENVS = 4
 EMBEDDING = 8
 NUM_ACTIONS = 4
 PIXELS = 16
@@ -43,15 +43,15 @@ def itself(output: jax.Array) -> jax.Array:
 
 
 def embedding() -> tuple[jax.Array, ...]:
-    return (jnp.ones((NUM_LANES, EMBEDDING)),)
+    return (jnp.ones((NUM_ENVS, EMBEDDING)),)
 
 
 def embedding_and_mask() -> tuple[jax.Array, ...]:
-    return (jnp.ones((NUM_LANES, EMBEDDING)), jnp.ones((NUM_LANES, NUM_ACTIONS), bool))
+    return (jnp.ones((NUM_ENVS, EMBEDDING)), jnp.ones((NUM_ENVS, NUM_ACTIONS), bool))
 
 
 def frame() -> tuple[jax.Array, ...]:
-    return (jnp.ones((NUM_LANES, PIXELS, PIXELS, CHANNELS)),)
+    return (jnp.ones((NUM_ENVS, PIXELS, PIXELS, CHANNELS)),)
 
 
 class Primitive(NamedTuple):
@@ -109,7 +109,7 @@ def test_params_are_a_plain_nested_mapping_of_arrays() -> None:
     An NNX state or a registered dataclass would fail both asserts, and is one opaque leaf to
     the optree registry echo flattens with.
     """
-    params = MLPTorso(layer_sizes=(6,)).init(jax.random.key(0), jnp.ones((NUM_LANES, EMBEDDING)))
+    params = MLPTorso(layer_sizes=(6,)).init(jax.random.key(0), jnp.ones((NUM_ENVS, EMBEDDING)))
 
     assert isinstance(params, dict)
     assert all(isinstance(leaf, jax.Array) for leaf in jax.tree.leaves(params))

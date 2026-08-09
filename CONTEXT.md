@@ -43,12 +43,6 @@ timescale carries a leading time axis; ones holding a single trailing value have
 `T = 1`.
 _Avoid_: Section, group, field
 
-**Lane**:
-One independent environment stream inside a Roller. Lanes are the second axis of
-every Transition leaf, so a single environment is one lane rather than a special
-case.
-_Avoid_: Worker, env index, batch element
-
 **Dummy step**:
 The step immediately after an episode ends, where the action is ignored and the
 reward is zero. Its observation is real — it is the terminal observation, and
@@ -141,7 +135,7 @@ _Avoid_: Trainer, loss, update step
 
 **Inference server**:
 A Policy hosted in its own process, batching act requests across many Actors'
-lanes. Owns its parameters, so its clients never handle them.
+envs. Owns its parameters, so its clients never handle them.
 _Avoid_: Policy server, actor server
 
 **Topology**:
