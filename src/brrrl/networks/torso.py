@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from flax.typing import Dtype, Initializer
 
 type Activation = Callable[[jax.Array], jax.Array]
-type Normalisation = Callable[..., nn.Module]
+type Normalisation = Callable[..., Activation]
 
 TORSO_GAIN = math.sqrt(2.0)
 TORSO_KERNEL_INIT = nn.initializers.orthogonal(TORSO_GAIN)
@@ -24,18 +24,9 @@ IMPALA_CHANNELS = (16, 32, 32)
 IMPALA_RESIDUAL_UNITS = 2
 
 
-def normalise(
-    embedding: jax.Array, normalisation: Normalisation | None, param_dtype: Dtype, dtype: Dtype | None
-) -> jax.Array:
-    """Normalise at the Torso's dtypes, or pass the embedding straight through when there is none.
-
-    ``normalisation`` builds the layer rather than being one, so any Flax norm fits —
-    ``nn.LayerNorm``, ``nn.RMSNorm``, ``nn.GroupNorm``, or a stateful one bound up front as
-    ``partial(nn.BatchNorm, use_running_average=False)``.
-    """
-    if normalisation is None:
-        return embedding
-    return normalisation(param_dtype=param_dtype, dtype=dtype)(embedding)
+def no_normalisation(**dtypes: Dtype | None) -> Activation:
+    """The do-nothing normalisation, so that no Torso carries a branch for the common case."""
+    return lambda embedding: embedding
 
 
 @final
@@ -48,7 +39,9 @@ class MLPTorso(nn.Module):
     Attributes:
         layer_sizes: Width of each Dense layer, in order.
         activation: Applied after every layer.
-        normalisation: Applied to each layer's output before activating it, or None for none.
+        normalisation: Builds the layer normalising each output before it is activated, so any
+            Flax norm fits — ``nn.LayerNorm``, ``nn.RMSNorm``, ``partial(nn.GroupNorm, ...)``.
+            It builds rather than is one so that each layer gets its own params.
         kernel_init: Root-two gain suits the default ReLU. An activation that wants another —
             5/3 for tanh — takes a different one, since no gain follows from a callable.
         param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
@@ -58,7 +51,7 @@ class MLPTorso(nn.Module):
 
     layer_sizes: Sequence[int]
     activation: Activation = nn.relu
-    normalisation: Normalisation | None = None
+    normalisation: Normalisation = no_normalisation
     kernel_init: Initializer = TORSO_KERNEL_INIT
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
@@ -73,7 +66,7 @@ class MLPTorso(nn.Module):
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
             )(embedding)
-            embedding = normalise(embedding, self.normalisation, self.param_dtype, self.dtype)
+            embedding = self.normalisation(param_dtype=self.param_dtype, dtype=self.dtype)(embedding)
             embedding = self.activation(embedding)
         return embedding
 
@@ -118,7 +111,7 @@ class NatureCNNTorso(nn.Module):
 
     Attributes:
         activation: Applied after every convolution.
-        normalisation: Applied to each convolution's output before activating it, or None for none.
+        normalisation: Builds the layer normalising each convolution's output, as on ``MLPTorso``.
         kernel_init: As on ``MLPTorso`` — pick one that suits ``activation``.
         param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
             has no half-precision kernel, so reach for ``dtype`` rather than this one.
@@ -126,7 +119,7 @@ class NatureCNNTorso(nn.Module):
     """
 
     activation: Activation = nn.relu
-    normalisation: Normalisation | None = None
+    normalisation: Normalisation = no_normalisation
     kernel_init: Initializer = TORSO_KERNEL_INIT
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
@@ -138,7 +131,7 @@ class NatureCNNTorso(nn.Module):
             embedding = convolution(channels, kernel, strides, "VALID", self.kernel_init, self.param_dtype, self.dtype)(
                 embedding
             )
-            embedding = normalise(embedding, self.normalisation, self.param_dtype, self.dtype)
+            embedding = self.normalisation(param_dtype=self.param_dtype, dtype=self.dtype)(embedding)
             embedding = self.activation(embedding)
         return flatten(embedding)
 
@@ -156,7 +149,7 @@ class ImpalaCNNTorso(nn.Module):
         channel_sizes: Width of each block, in order. The published deep architecture by default.
         num_residual_units: Residual units following each block's max-pool.
         activation: Applied before every convolution in a residual unit, and once at the end.
-        normalisation: Applied to every convolution's output, or None for none.
+        normalisation: Builds the layer normalising every convolution's output, as on ``MLPTorso``.
         kernel_init: As on ``MLPTorso`` — pick one that suits ``activation``.
         param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
             has no half-precision kernel, so reach for ``dtype`` rather than this one.
@@ -166,7 +159,7 @@ class ImpalaCNNTorso(nn.Module):
     channel_sizes: Sequence[int] = IMPALA_CHANNELS
     num_residual_units: int = IMPALA_RESIDUAL_UNITS
     activation: Activation = nn.relu
-    normalisation: Normalisation | None = None
+    normalisation: Normalisation = no_normalisation
     kernel_init: Initializer = TORSO_KERNEL_INIT
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
@@ -185,7 +178,7 @@ class ImpalaCNNTorso(nn.Module):
         convolved = convolution(channels, KERNEL, STRIDE, "SAME", self.kernel_init, self.param_dtype, self.dtype)(
             embedding
         )
-        return normalise(convolved, self.normalisation, self.param_dtype, self.dtype)
+        return self.normalisation(param_dtype=self.param_dtype, dtype=self.dtype)(convolved)
 
     def residual_unit(self, channels: int, embedding: jax.Array) -> jax.Array:
         convolved = self.convolve(channels, self.activation(embedding))
