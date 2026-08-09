@@ -134,3 +134,12 @@ def test_a_stateful_normalisation_can_be_passed_in_bound_up_front() -> None:
     assert embedding.shape == (NUM_LANES, 16)
     assert "batch_stats" in variables
     assert "batch_stats" in updates
+
+
+def test_a_different_kernel_init_is_honoured(apply_module: Callable[..., Any]) -> None:
+    """No gain follows from a callable activation, so tanh's 5/3 has to be passable."""
+    torso = MLPTorso(layer_sizes=(EMBEDDING,), activation=identity, kernel_init=nn.initializers.orthogonal(5 / 3))
+
+    kernel = apply_module(torso, jnp.eye(OBS_FEATURES))
+
+    assert jnp.allclose(jnp.linalg.norm(kernel, axis=0), 5 / 3, atol=1e-5)
