@@ -7,9 +7,8 @@ import jax
 import jax.numpy as jnp
 from flax.typing import Dtype
 
-from brrrl.networks.initialiser import orthogonal
-
 type Activation = Callable[[jax.Array], jax.Array]
+type Normalisation = Callable[..., nn.Module]
 
 TORSO_GAIN = math.sqrt(2.0)
 
@@ -24,6 +23,20 @@ IMPALA_CHANNELS = (16, 32, 32)
 IMPALA_RESIDUAL_UNITS = 2
 
 
+def normalise(
+    embedding: jax.Array, normalisation: Normalisation | None, param_dtype: Dtype, dtype: Dtype | None
+) -> jax.Array:
+    """Normalise at the Torso's dtypes, or pass the embedding straight through when there is none.
+
+    ``normalisation`` builds the layer rather than being one, so any Flax norm fits —
+    ``nn.LayerNorm``, ``nn.RMSNorm``, ``nn.GroupNorm``, or a stateful one bound up front as
+    ``partial(nn.BatchNorm, use_running_average=False)``.
+    """
+    if normalisation is None:
+        return embedding
+    return normalisation(param_dtype=param_dtype, dtype=dtype)(embedding)
+
+
 @final
 class MLPTorso(nn.Module):
     """Dense stack mapping an observation to an embedding.
@@ -34,14 +47,15 @@ class MLPTorso(nn.Module):
     Attributes:
         layer_sizes: Width of each Dense layer, in order.
         activation: Applied after every layer.
-        layer_norm: Normalise each layer's output before activating it.
-        param_dtype: Dtype params are stored in.
+        normalisation: Applied to each layer's output before activating it, or None for none.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layers compute in, promoted from the inputs and params when None.
     """
 
     layer_sizes: Sequence[int]
     activation: Activation = nn.relu
-    layer_norm: bool = False
+    normalisation: Normalisation | None = None
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
 
@@ -51,12 +65,11 @@ class MLPTorso(nn.Module):
         for size in self.layer_sizes:
             embedding = nn.Dense(
                 size,
-                kernel_init=orthogonal(TORSO_GAIN),
+                kernel_init=nn.initializers.orthogonal(TORSO_GAIN),
                 param_dtype=self.param_dtype,
                 dtype=self.dtype,
             )(embedding)
-            if self.layer_norm:
-                embedding = nn.LayerNorm(param_dtype=self.param_dtype, dtype=self.dtype)(embedding)
+            embedding = normalise(embedding, self.normalisation, self.param_dtype, self.dtype)
             embedding = self.activation(embedding)
         return embedding
 
@@ -75,7 +88,7 @@ def convolution(
         kernel,
         strides,
         padding=padding,
-        kernel_init=orthogonal(TORSO_GAIN),
+        kernel_init=nn.initializers.orthogonal(TORSO_GAIN),
         param_dtype=param_dtype,
         dtype=dtype,
     )
@@ -100,13 +113,14 @@ class NatureCNNTorso(nn.Module):
 
     Attributes:
         activation: Applied after every convolution.
-        layer_norm: Normalise each convolution's output before activating it.
-        param_dtype: Dtype params are stored in.
+        normalisation: Applied to each convolution's output before activating it, or None for none.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layers compute in, promoted from the inputs and params when None.
     """
 
     activation: Activation = nn.relu
-    layer_norm: bool = False
+    normalisation: Normalisation | None = None
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
 
@@ -115,8 +129,7 @@ class NatureCNNTorso(nn.Module):
         embedding = observation
         for channels, kernel, strides in NATURE_STACK:
             embedding = convolution(channels, kernel, strides, "VALID", self.param_dtype, self.dtype)(embedding)
-            if self.layer_norm:
-                embedding = nn.LayerNorm(param_dtype=self.param_dtype, dtype=self.dtype)(embedding)
+            embedding = normalise(embedding, self.normalisation, self.param_dtype, self.dtype)
             embedding = self.activation(embedding)
         return flatten(embedding)
 
@@ -134,15 +147,16 @@ class ImpalaCNNTorso(nn.Module):
         channel_sizes: Width of each block, in order. The published deep architecture by default.
         num_residual_units: Residual units following each block's max-pool.
         activation: Applied before every convolution in a residual unit, and once at the end.
-        layer_norm: Normalise every convolution's output.
-        param_dtype: Dtype params are stored in.
+        normalisation: Applied to every convolution's output, or None for none.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layers compute in, promoted from the inputs and params when None.
     """
 
     channel_sizes: Sequence[int] = IMPALA_CHANNELS
     num_residual_units: int = IMPALA_RESIDUAL_UNITS
     activation: Activation = nn.relu
-    layer_norm: bool = False
+    normalisation: Normalisation | None = None
     param_dtype: Dtype = jnp.float32
     dtype: Dtype | None = None
 
@@ -158,9 +172,7 @@ class ImpalaCNNTorso(nn.Module):
 
     def convolve(self, channels: int, embedding: jax.Array) -> jax.Array:
         convolved = convolution(channels, KERNEL, STRIDE, "SAME", self.param_dtype, self.dtype)(embedding)
-        if self.layer_norm:
-            convolved = nn.LayerNorm(param_dtype=self.param_dtype, dtype=self.dtype)(convolved)
-        return convolved
+        return normalise(convolved, self.normalisation, self.param_dtype, self.dtype)
 
     def residual_unit(self, channels: int, embedding: jax.Array) -> jax.Array:
         convolved = self.convolve(channels, self.activation(embedding))

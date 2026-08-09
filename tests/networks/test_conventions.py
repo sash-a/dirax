@@ -88,10 +88,19 @@ def test_computation_dtype_reaches_the_output(primitive: Primitive, apply_module
 
 
 @pytest.mark.parametrize("primitive", PRIMITIVES)
-def test_param_dtype_reaches_every_param(primitive: Primitive) -> None:
-    params = primitive.build(param_dtype=jnp.bfloat16).init(jax.random.key(0), *primitive.inputs())
+def test_params_stay_in_their_own_dtype_while_computation_moves(
+    primitive: Primitive, apply_module: Callable[..., Any]
+) -> None:
+    """The mixed precision an inference server wants: master weights kept, forward pass cheap.
 
-    assert all(leaf.dtype == jnp.bfloat16 for leaf in jax.tree.leaves(params))
+    A half-precision ``param_dtype`` is not on offer — orthogonal initialisation runs a QR and
+    there is no half-precision QR kernel — so single-precision storage is the thing to pin.
+    """
+    module = primitive.build(param_dtype=jnp.float32, dtype=jnp.bfloat16)
+    params = module.init(jax.random.key(0), *primitive.inputs())
+
+    assert all(leaf.dtype == jnp.float32 for leaf in jax.tree.leaves(params))
+    assert primitive.array_of(apply_module(module, *primitive.inputs())).dtype == jnp.bfloat16
 
 
 def test_params_are_a_plain_nested_mapping_of_arrays() -> None:

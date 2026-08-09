@@ -7,7 +7,6 @@ import jax.numpy as jnp
 from flax.typing import Dtype
 
 from brrrl.networks.distribution import TanhNormal
-from brrrl.networks.initialiser import orthogonal
 
 POLICY_GAIN = 0.01
 VALUE_GAIN = 1.0
@@ -16,7 +15,7 @@ MIN_SCALE = 1e-3
 
 def dense(features: int, gain: float, param_dtype: Dtype, dtype: Dtype | None) -> nn.Dense:
     """A Head's final Dense, orthogonally initialised at ``gain``."""
-    return nn.Dense(features, kernel_init=orthogonal(gain), param_dtype=param_dtype, dtype=dtype)
+    return nn.Dense(features, kernel_init=nn.initializers.orthogonal(gain), param_dtype=param_dtype, dtype=dtype)
 
 
 @final
@@ -28,7 +27,8 @@ class DiscreteHead(nn.Module):
 
     Attributes:
         num_actions: Size of the action space.
-        param_dtype: Dtype params are stored in.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layer computes in, promoted from the inputs and params when None.
     """
 
@@ -53,7 +53,8 @@ class MaskedDiscreteHead(nn.Module):
 
     Attributes:
         num_actions: Size of the action space.
-        param_dtype: Dtype params are stored in.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layer computes in, promoted from the inputs and params when None.
     """
 
@@ -81,7 +82,8 @@ class ContinuousHead(nn.Module):
     Attributes:
         num_actions: Size of the action space.
         min_scale: Floor on the base Gaussian's scale.
-        param_dtype: Dtype params are stored in.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layers compute in, promoted from the inputs and params when None.
     """
 
@@ -102,7 +104,8 @@ class ValueHead(nn.Module):
     """Embedding to one scalar per element, with no trailing singleton axis.
 
     Attributes:
-        param_dtype: Dtype params are stored in.
+        param_dtype: Dtype params are stored in. Orthogonal initialisation runs a QR, which
+            has no half-precision kernel, so reach for ``dtype`` rather than this one.
         dtype: Dtype the layer computes in, promoted from the inputs and params when None.
     """
 

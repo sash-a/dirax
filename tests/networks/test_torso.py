@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from functools import partial
 from typing import Any, NamedTuple
 
 import flax.linen as nn
@@ -32,10 +33,10 @@ def test_mlp_accepts_an_arbitrary_callable_as_its_activation(apply_module: Calla
     assert (embedding == 3.0).all()
 
 
-def test_mlp_normalises_each_embedding_only_when_layer_norm_is_enabled(apply_module: Callable[..., Any]) -> None:
+def test_mlp_normalises_each_embedding_only_when_given_a_normalisation(apply_module: Callable[..., Any]) -> None:
     observation = 5.0 * jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES))
 
-    normalised = apply_module(MLPTorso(layer_sizes=(16,), activation=identity, layer_norm=True), observation)
+    normalised = apply_module(MLPTorso(layer_sizes=(16,), activation=identity, normalisation=nn.LayerNorm), observation)
     plain = apply_module(MLPTorso(layer_sizes=(16,), activation=identity), observation)
 
     assert jnp.allclose(normalised.mean(axis=-1), 0.0, atol=1e-5)
@@ -95,12 +96,41 @@ def test_conv_torso_accepts_an_arbitrary_callable_as_its_activation(
 
 
 @pytest.mark.parametrize("torso", CONV_TORSOS)
-def test_conv_torso_layer_norm_takes_the_input_scale_out_of_the_embedding(
+def test_conv_torso_normalisation_takes_the_input_scale_out_of_the_embedding(
     torso: ConvTorso, apply_module: Callable[..., Any]
 ) -> None:
     loud = frames((NUM_LANES,), torso.pixels, scale=100.0)
 
-    normalised = apply_module(torso.build(layer_norm=True), loud)
+    normalised = apply_module(torso.build(normalisation=nn.LayerNorm), loud)
     plain = apply_module(torso.build(), loud)
 
     assert jnp.abs(normalised).max() < jnp.abs(plain).max() / 10.0
+
+
+@pytest.mark.parametrize(
+    "normalisation",
+    [nn.LayerNorm, nn.RMSNorm, partial(nn.GroupNorm, num_groups=4)],
+    ids=["layer", "rms", "group"],
+)
+def test_any_stateless_normalisation_can_be_passed_in(
+    normalisation: Callable[..., nn.Module], apply_module: Callable[..., Any]
+) -> None:
+    torso = MLPTorso(layer_sizes=(16,), activation=identity, normalisation=normalisation)
+
+    embedding = apply_module(torso, 5.0 * jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES)))
+
+    assert embedding.shape == (NUM_LANES, 16)
+    assert (jnp.abs(embedding) < 5.0).all()
+
+
+def test_a_stateful_normalisation_can_be_passed_in_bound_up_front() -> None:
+    """Batch statistics land in their own collection, which is the caller's to thread."""
+    torso = MLPTorso(layer_sizes=(16,), normalisation=partial(nn.BatchNorm, use_running_average=False))
+    observation = jax.random.normal(jax.random.key(1), (NUM_LANES, OBS_FEATURES))
+
+    variables = torso.init(jax.random.key(0), observation)
+    embedding, updates = torso.apply(variables, observation, mutable=["batch_stats"])
+
+    assert embedding.shape == (NUM_LANES, 16)
+    assert "batch_stats" in variables
+    assert "batch_stats" in updates
