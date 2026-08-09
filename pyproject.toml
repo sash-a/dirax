@@ -20,6 +20,7 @@ dependencies = [
     "id-echo>=0.2.0",
     # RL libs
     "gymnasium>=1.2.0",
+    "distrax>=0.1.5",
     # Other
     "etils[epath]>=1.14.0",
 ]
