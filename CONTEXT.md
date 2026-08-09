@@ -73,6 +73,39 @@ is now acting under. Once per Trajectory, so a Trajectory has exactly one
 Version.
 _Avoid_: Refresh, pull, update
 
+### Networks
+
+**Torso**:
+The part of a network that maps an observation to an embedding. Takes and returns
+arrays, so it is shared across algorithms and knows nothing about action spaces.
+_Avoid_: Encoder, feature extractor, backbone, body
+
+**Head**:
+The part of a network that maps an embedding to an action distribution or a value.
+The only part that knows the shape of the action space.
+_Avoid_: Output layer, predictor, projection
+
+**Assembly**:
+The composition of Torsos and Heads into the network an algorithm applies. Belongs
+to the algorithm rather than to the shared primitives, because what it returns and
+which params reach an Actor differ per algorithm.
+_Avoid_: Model, architecture, network factory
+
+### Learning
+
+**Estimator**:
+The rule that turns a Trajectory's rewards and values into the targets and
+advantages an Objective consumes. GAE and VTrace are the same kind of thing.
+_Avoid_: Advantage module, value estimator, postprocessor
+
+**Objective**:
+The rule that turns advantages and an action distribution into the policy's
+contribution to the scalar a Learner differentiates. The policy term only — the
+value loss and entropy bonus are separate terms weighted alongside it.
+_Avoid_: Loss, loss module, criterion
+
+An algorithm is a choice of both, because the two vary independently.
+
 ### Parameters
 
 **Param source**:

@@ -17,7 +17,9 @@ across actors, and handle staleness. Roughly eight lines of orchestration exist
 in both places.
 
 That duplication is deliberate. `main()` is an executable spec of the algorithm
-API, and it gives a standing constraint worth keeping: **if the training loop
-can't be written in about eight readable lines, the protocol surface is too
-big.** Parity between the two paths is a test — both must learn CartPole — not
+API. Parity between the two paths is a test — both must learn CartPole — not
 something bought with shared code.
+
+The eight-line constraint this ADR originally placed on the training loop is
+superseded by ADR-0009, which constrains what the loop may contain rather than
+how long it may be.
