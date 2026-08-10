@@ -4,36 +4,30 @@ import numpy as np
 import optax
 from numpy.typing import NDArray
 
-from brrrl.types import ArrayTree, Params, PRNGKey
+from brrrl.types import Array, ArrayTree, Params, PRNGKey
 
 
 class PPOOutput(NamedTuple):
-    action: NDArray
-    log_prob: NDArray[np.float32]
-    value: NDArray[np.float32]
+    action: Array
+    log_prob: Array
+    value: Array
 
 
 class PPOTransition(NamedTuple):
-    """One step. Stacked to ``(T, E, ...)`` as the buffered timescale."""
+    """One slot, in the order it aligns. Stacked to ``(T+1, E, ...)`` as the buffered timescale."""
 
     observation: ArrayTree
-    action: NDArray
-    reward: NDArray[np.float32]
     terminated: NDArray[np.bool_]
     truncated: NDArray[np.bool_]
-    log_prob: NDArray[np.float32]
-    value: NDArray[np.float32]
-
-
-class Bootstrap(NamedTuple):
-    """Single-item timescale: every leaf ``(1, N, ...)``."""
-
-    observation: NDArray
+    reward: NDArray[np.floating]
+    action: Array
+    value: Array
+    log_prob: Array
 
 
 class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
-    bootstrap: Bootstrap
+    version: NDArray[np.int32]
 
 
 class PPOLearnerState(NamedTuple):

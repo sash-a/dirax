@@ -35,7 +35,8 @@ Metrics, which records into a Collector and never reads back.
 ### Data
 
 **Transition**:
-One environment step: what the agent saw, what it did, and what came back.
+One environment step: an observation and whether its episode ended there, the
+action taken from it, and what that action earned.
 _Avoid_: Timestep, experience, SARS tuple
 
 **Trajectory**:
@@ -49,11 +50,12 @@ timescale carries a leading time axis; ones holding a single trailing value have
 `T = 1`.
 _Avoid_: Section, group, field
 
-**Dummy step**:
-The step immediately after an episode ends, where the action is ignored and the
-reward is zero. Its observation is real — it is the terminal observation, and
-where truncation bootstrapping reads from.
-_Avoid_: Padding, invalid step, reset step
+**Final obs**:
+The observation of the state an episode ended in, carried by the same Transition
+as the flag that says so. Truncation bootstrapping reads its value; a
+termination reads nothing from it. Either way it is the action and reward beside
+it that are meaningless, never the observation.
+_Avoid_: Dummy step, padding, invalid step, reset step
 
 ### Acting
 
@@ -66,6 +68,12 @@ _Avoid_: Collector, sampler, worker
 Turns an observation into an action. Owns its own parameters, so a local policy
 and an inference-server client are interchangeable to a Roller.
 _Avoid_: Agent, network, model
+
+**Env stepper**:
+What a Roller steps to advance its environments, presenting one step API with a
+leading env axis on every field. Reports its finished episodes beside the step,
+so a Roller reads them the same way whatever built the environments.
+_Avoid_: Env, environment wrapper, vectoriser
 
 **Sync point**:
 The moment a Policy aligns with the latest parameters and reports the Version it

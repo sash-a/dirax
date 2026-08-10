@@ -8,10 +8,15 @@ valid and isn't.
 
 ## Consequences
 
-`NEXT_STEP` costs one Trajectory slot per episode per env: the step after a
-terminal has its action ignored and its reward zeroed. That slot needs masking,
-but no `mask` field — `terminated | truncated` at `t-1` already says so.
+`NEXT_STEP` costs one Trajectory slot per episode per env: the step whose action
+the env ignores and whose reward it zeroes. That slot needs masking, but no
+`mask` field. Because a Transition carries the flags describing its own
+observation, `terminated | truncated` on the **same slot** already says so.
 
-The dummy step's **observation is real**. It is the terminal observation, and it
-is where truncation bootstrapping reads its value from. Don't "optimise" the
-slot away.
+That slot holds the **Final obs**, and it is real. Truncation bootstrapping reads
+its value from there; only a termination reads nothing from it. Don't "optimise"
+the slot away.
+
+The new episode's first observation lands one slot further on, so a recurrent
+carry resets on `terminated | truncated` at `t-1` — one shift later than the
+mask, and the only shift the layout has.

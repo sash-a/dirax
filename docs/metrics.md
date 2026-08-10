@@ -16,11 +16,11 @@ record  →  collect  →  log
 
 | | Who implements it | Who calls it |
 |---|---|---|
-| `MetricRecorder.record(metrics, transitions=0)` + `record_artifact(path, directory=None)` | `LocalMetricRecorder`, `RayMetricRecorder` | components |
+| `MetricRecorder.record(metrics, num_transitions=0)` + `record_artifact(path, directory=None)` | `LocalMetricRecorder`, `RayMetricRecorder` | components |
 | `Logger.log(metrics, step)` + `log_artifact(path, directory=None)` + `close()` | processors and backends | the collector |
 
 A component holds a `MetricRecorder` and never learns the Step. It reports how far it
-moved the world — `transitions` — and only Actors move it, so everyone else omits the
+moved the world — `num_transitions` — and only Actors move it, so everyone else omits the
 argument. The collector accumulates those increments into the Step and hands an
 absolute position to a `Logger`.
 
@@ -71,7 +71,7 @@ fire-and-forget, so nothing on the hot path blocks on a slow backend.
 
 ```python
 # Actor: advances the clock.
-self.metrics.record({"return": [1.0, 3.0]}, transitions=512)
+self.metrics.record({"return": [1.0, 3.0]}, num_transitions=512)
 
 # Trainer: no transitions; version rides along as a scalar.
 self.metrics.record({**metrics, "version": [version], "consumed": [consumed]})

@@ -22,8 +22,8 @@ class RayMetricCollector:
     def __init__(self, build_collector: Callable[[], MetricCollector]) -> None:
         self.collector = build_collector()
 
-    def collect(self, origin: Origin, metrics: Metrics, transitions: int = 0) -> None:
-        self.collector.collect(origin, metrics, transitions)
+    def collect(self, origin: Origin, metrics: Metrics, num_transitions: int = 0) -> None:
+        self.collector.collect(origin, metrics, num_transitions)
 
     def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None = None) -> None:
         self.collector.collect_artifact(origin, path, directory)
@@ -37,8 +37,8 @@ class RayMetricRecorder:
     collector: ActorHandle
     origin: Origin
 
-    def record(self, metrics: Metrics, transitions: int = 0) -> None:
-        self.collector.collect.remote(self.origin, metrics, transitions)
+    def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
+        self.collector.collect.remote(self.origin, metrics, num_transitions)
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         """Only the path crosses the wire, so it must resolve on the collector's node."""

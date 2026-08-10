@@ -17,8 +17,8 @@ class Origin(StrEnum):
 
 
 class MetricRecorder(Protocol):
-    def record(self, metrics: Metrics, transitions: int = 0) -> None:
-        """Report metrics accounting for ``transitions`` environment steps."""
+    def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
+        """Report metrics accounting for ``num_transitions`` environment steps."""
         ...
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
@@ -36,8 +36,8 @@ class MetricCollector:
     loggers: dict[Origin, Logger]
     steps: int = 0
 
-    def collect(self, origin: Origin, metrics: Metrics, transitions: int = 0) -> None:
-        self.steps += transitions
+    def collect(self, origin: Origin, metrics: Metrics, num_transitions: int = 0) -> None:
+        self.steps += num_transitions
         self.loggers[origin].log(metrics, self.steps)
 
     def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None = None) -> None:
@@ -53,8 +53,8 @@ class LocalMetricRecorder:
     collector: MetricCollector
     origin: Origin
 
-    def record(self, metrics: Metrics, transitions: int = 0) -> None:
-        self.collector.collect(self.origin, metrics, transitions)
+    def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
+        self.collector.collect(self.origin, metrics, num_transitions)
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         self.collector.collect_artifact(self.origin, path, directory)

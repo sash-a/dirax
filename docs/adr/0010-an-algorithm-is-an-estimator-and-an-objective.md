@@ -24,14 +24,14 @@ caller, which is how `objectives/ppo.py` reached 1,813 lines.
 It already has all of them, and ADR-0007 commits us to the distrax/tfp tree it sits on.
 
 The cost is that rlax expresses an episode boundary as a single `discount_t`, while we
-keep `terminated` and `truncated` apart and ADR-0001 adds a Dummy step. The conventions
+keep `terminated` and `truncated` apart and ADR-0001 adds a Final obs slot. The conventions
 reconcile — GAE's per-timestep `lambda_` carries truncation, vtrace's `sample_mask`
-carries the Dummy step — but that is not the call anyone writes by default, and getting it
+carries the unusable slot — but that is not the call anyone writes by default, and getting it
 wrong still trains, just worse. So the translation is **one function in `learning/`**,
 never open-coded per algorithm.
 
 If that function stops being small — a second convention for off-policy targets, a
-signature that cannot express the Dummy step — rlax is buying less than it costs. Then we
+signature that cannot express the Final obs — rlax is buying less than it costs. Then we
 own the arithmetic and keep rlax as a **test oracle** asserting our GAE and VTrace match
 theirs. That is ADR-0007's shape: take the library for what it does well, write the part
 that matters, measure against reference.

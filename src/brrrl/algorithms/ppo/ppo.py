@@ -1,25 +1,9 @@
 from dataclasses import dataclass
 
 import optax
-from echo import TrajectoryAccumulator
-from numpy.typing import NDArray
 
-from brrrl.acting.env_stepper import EnvStepper
-from brrrl.acting.policy import Policy
-from brrrl.algorithms.ppo.types import PPOLearnerState, PPOOutput, PPOTrajectory
+from brrrl.algorithms.ppo.types import PPOLearnerState, PPOTrajectory
 from brrrl.types import Metrics, PRNGKey
-
-
-@dataclass
-class PPORoller[Obs]:
-    stepper: EnvStepper[Obs, NDArray]
-    policy: Policy[Obs, PPOOutput]
-    accumulator: TrajectoryAccumulator
-    num_steps: int
-    key: PRNGKey
-
-    def rollout(self) -> tuple[PPOTrajectory, Metrics]:
-        raise NotImplementedError
 
 
 @dataclass

@@ -21,7 +21,7 @@ hard to reverse; keeping it single keeps everything else recoverable.
 
 ## One log method; per-source behaviour is bound at construction
 
-`MetricsSink.log(metrics, transitions=0)` is the whole component-facing surface.
+`MetricsSink.log(metrics, num_transitions=0)` is the whole component-facing surface.
 Only Actors pass a nonzero count — the Trainer, evaluators and the checkpointer
 produce zero transitions, which is true rather than a sentinel.
 
@@ -30,14 +30,14 @@ Namespace, and whether a source is windowed or logged raw, are properties of the
 time. So they are bound into the sink it is handed (`Source`) and resolved by a
 routing table in `MetricsStore`, rather than appearing in the signature.
 
-`transitions` must not also select that behaviour. Evaluators fold — several of
+`num_transitions` must not also select that behaviour. Evaluators fold — several of
 them aggregate per key — while advancing the clock not at all, so "advances the
-clock" and "is aggregated" are separate axes and no heuristic on `transitions`
+clock" and "is aggregated" are separate axes and no heuristic on `num_transitions`
 can express both.
 
 The cost is that reading `MetricsSink` no longer tells you which sources exist or
 how each is treated; the `Source` enum and the routing table do. In exchange
-`transitions` means exactly one thing, a component cannot tag itself wrong, and a
+`num_transitions` means exactly one thing, a component cannot tag itself wrong, and a
 new source is a new row rather than a protocol change.
 
 ## Counting, windowing and shutdown
@@ -46,7 +46,7 @@ Counting lives in `MetricCountingSink`, never in a backend. `Logger.log(metrics,
 step)` takes an absolute position and maps 1:1 onto `mlflow.log_metrics` and
 `wandb.log`, so the sink is the single place the unit changes from increment to
 position. The differing parameter names are load-bearing: the two protocols share
-an arity and a type, so `step` vs `transitions` is what stops a sink from
+an arity and a type, so `step` vs `num_transitions` is what stops a sink from
 structurally satisfying `Logger` and nesting inside itself.
 
 Windowing is a `Logger` decorator sitting *below* the counting sink, not a
