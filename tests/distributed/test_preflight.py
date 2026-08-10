@@ -18,7 +18,7 @@ from brrrl.distributed.placement.component import Behaviour
 from brrrl.distributed.placement.placement import Placement, reserve
 from brrrl.distributed.placement.preflight import Placed, Unplaceable, preflight
 
-WATCHED = ("JAX_PLATFORMS", "XLA_PYTHON_CLIENT_MEM_FRACTION", "BRRRL_JOB_WIDE")
+WATCHED = ("JAX_PLATFORMS", "BRRRL_JOB_WIDE")
 
 
 class Probe:

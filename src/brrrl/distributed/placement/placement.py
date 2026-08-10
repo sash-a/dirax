@@ -1,6 +1,6 @@
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
-from typing import Any, Literal
+from dataclasses import dataclass, fields, replace
+from typing import Any, Literal, Self
 
 import ray
 from ray.actor import ActorClass
@@ -32,6 +32,14 @@ class Placement:
         """Only what was claimed, since a Placement is mostly unset and this labels a progress bar."""
         stated = {field.name: getattr(self, field.name) for field in fields(self)}
         return f"Placement({', '.join(f'{name}={value!r}' for name, value in stated.items() if value is not None)})"
+
+    def with_env(self, **env: str) -> Self:
+        """This claim plus ``env``, winning per key, for variables a config file cannot hold.
+
+        A run id or a coordinator address is not knowable until a run starts, so the driver derives
+        a new claim rather than reaching the merge through a second path.
+        """
+        return replace(self, env={**(self.env or {}), **env})
 
     def options(
         self, component: type[Component], group: PlacementGroup | None = None, index: int = -1
@@ -99,6 +107,10 @@ class Placements:
     params: Placement = Placement()
     metrics: Placement = Placement()
     checkpoints: Placement = Placement()
+
+    def with_env(self, **env: str) -> Self:
+        """Every role's claim plus ``env``, so a driver cannot set a run id on five roles and miss the sixth."""
+        return replace(self, **{field.name: getattr(self, field.name).with_env(**env) for field in fields(self)})
 
 
 def reserve(placement: Placement, size: int, strategy: Strategy = "PACK") -> PlacementGroup:

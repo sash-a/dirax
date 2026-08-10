@@ -93,21 +93,47 @@ def test_claiming_no_gpu_derives_a_cpu_only_jax_platform() -> None:
     assert env_of(Placement(num_gpus=0).options(Bare)) == {"JAX_PLATFORMS": "cpu"}
 
 
-def test_claiming_a_whole_gpu_derives_nothing() -> None:
-    """The card is the process's alone, so JAX's own defaults are right and no runtime environment is needed."""
+def test_claiming_a_gpu_at_all_derives_nothing() -> None:
+    """A process that claimed a card is left to JAX's own defaults, whole card or fraction of one."""
     assert "runtime_env" not in Placement(num_gpus=1).options(Bare)
-
-
-def test_claiming_a_fraction_of_a_gpu_derives_a_matching_memory_fraction() -> None:
-    """Otherwise a Trainer and an inference server sharing one card each try to take 75% of it."""
-    assert env_of(Placement(num_gpus=0.25).options(Bare)) == {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.25"}
+    assert "runtime_env" not in Placement(num_gpus=0.25).options(Bare)
 
 
 def test_the_callers_environment_wins_over_a_derived_variable() -> None:
     """An unusual accelerator setup must not be fenced off by the library's inference."""
-    claim = Placement(num_gpus=0.5, env={"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9", "MUJOCO_GL": "egl"})
+    claim = Placement(env={"JAX_PLATFORMS": "cuda", "MUJOCO_GL": "egl"})
 
-    assert env_of(claim.options(Bare)) == {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9", "MUJOCO_GL": "egl"}
+    assert env_of(claim.options(Bare)) == {"JAX_PLATFORMS": "cuda", "MUJOCO_GL": "egl"}
+
+
+def test_a_variable_the_driver_adds_joins_the_claims_own() -> None:
+    """A run id is minted when a run starts, so it cannot be in the config the claim was written in."""
+    claim = Placement(num_cpus=1, env={"MUJOCO_GL": "egl"})
+
+    added = claim.with_env(BRRRL_RUN_ID="7")
+
+    assert added.env == {"MUJOCO_GL": "egl", "BRRRL_RUN_ID": "7"}
+    assert added.num_cpus == 1
+
+
+def test_a_variable_the_driver_adds_wins_over_the_claims_own() -> None:
+    """Of the two the driver is later and narrower, and knows what a config file cannot."""
+    assert Placement(env={"MUJOCO_GL": "glx"}).with_env(MUJOCO_GL="egl").env == {"MUJOCO_GL": "egl"}
+
+
+def test_a_variable_the_driver_adds_still_beats_a_derived_one() -> None:
+    """It arrives as an ordinary claim env, so the existing rule covers it and there is no second merge path."""
+    claim = Placement(num_gpus=0.5).with_env(XLA_PYTHON_CLIENT_MEM_FRACTION="0.9")
+
+    assert env_of(claim.options(Bare)) == {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+
+
+def test_adding_a_variable_to_a_run_reaches_every_role() -> None:
+    """One call rather than six, so a driver cannot set a run id on five roles and forget the sixth."""
+    placements = Placements(trainer=Placement(num_gpus=1)).with_env(BRRRL_RUN_ID="7")
+
+    assert all(getattr(placements, field.name).env == {"BRRRL_RUN_ID": "7"} for field in fields(placements))
+    assert placements.trainer.num_gpus == 1
 
 
 def test_a_reservation_becomes_a_scheduling_strategy_carrying_the_members_index() -> None:
