@@ -38,9 +38,6 @@ def preflight(placed: Sequence[Placed], timeout: float = 600, interval: float = 
     Without it an unschedulable Component sits pending forever, and a run short four of sixty
     Actors trains to completion at reduced throughput with nothing reported anywhere.
 
-    The wait shows a bar counting Components placed, labelled with what is still pending, because
-    queueing twenty minutes for capacity on a shared cluster has to look different from a hang.
-
     Args:
         placed: Every handle and reservation the run depends on, with the claim each came from.
         timeout: Seconds to allow before giving up.

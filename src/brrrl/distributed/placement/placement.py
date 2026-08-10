@@ -17,9 +17,7 @@ class Placement:
     """What one role's processes claim, and where they may land.
 
     Every field is unset by default, so a run naming no Placement lands wherever Ray will
-    take it — which is what makes a laptop need no configuration and no cluster detection.
-    The set is closed: the options it excludes are the ones a caller could use to break a
-    Component's own correctness.
+    take it, which is what makes a laptop need no configuration and no cluster detection.
     """
 
     num_cpus: float | None = None
