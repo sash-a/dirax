@@ -84,8 +84,6 @@ class Placement:
         """
         if not self.num_gpus:
             return {"JAX_PLATFORMS": "cpu"}
-        if self.num_gpus < 1:
-            return {"XLA_PYTHON_CLIENT_MEM_FRACTION": str(self.num_gpus)}
         return {}
 
 
