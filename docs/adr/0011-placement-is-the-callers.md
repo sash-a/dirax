@@ -103,6 +103,14 @@ one value, per-role `SPREAD` is a gang strategy rather than a Placement field.
 - **A `ray_init()` wrapper with environment detection.** Its three jobs are gone: the
   resource mock is unnecessary, `RAY_ADDRESS` is read by Ray, and `runtime_env` excludes
   apply only to a `working_dir` upload.
+- **Deriving `XLA_PYTHON_CLIENT_MEM_FRACTION` from a fractional GPU claim.** A fractional
+  `num_gpus` is scheduling weight, not a memory budget. Ray does not partition the device, so
+  every process sharing a card still sees all of it, and `num_gpus=0.5` says nothing about
+  whether that process wants half the memory or 80% of it. Deriving one from the other caps a
+  process at a number nobody chose, and the failure — an OOM inside XLA — reads nothing like
+  its cause. A Trainer and an inference server sharing a card do still each need a fraction
+  set or they will both try to take 75%; `Placement.env` is where the caller sets it, per
+  role and exactly.
 
 ## Consequences
 
@@ -113,10 +121,11 @@ what makes them unit-testable — and each declares `RAY_OPTIONS` instead.
 brrrl owns the JAX environment of every process it places, because Ray leaves
 `CUDA_VISIBLE_DEVICES` *unset* for a `num_gpus=0` actor rather than blanking it, and JAX
 then preallocates most of a card it was never given. A claim of no GPU derives
-`JAX_PLATFORMS=cpu`; a fractional claim derives a matching
-`XLA_PYTHON_CLIENT_MEM_FRACTION`, without which a Trainer and an inference server sharing
-one card each try to take 75% of it. `Placement.env` overrides both, and job-level
-`env_vars` from the caller's `ray.init` survive underneath, Ray merging per key.
+`JAX_PLATFORMS=cpu`, and that is the whole of the derivation. `Placement.env` overrides it,
+and job-level `env_vars` from the caller's `ray.init` survive underneath, Ray merging per
+key. Values a config file cannot hold — a run id, a coordinator address — reach a claim
+through `Placement.with_env`, which derives a new claim rather than adding a second merge
+path.
 
 A Component's behaviour must be a constant. `InferenceServer`'s `max_concurrency`
 plausibly scales with the size of the cohort it serves, and would be the first case that

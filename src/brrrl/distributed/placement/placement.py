@@ -34,11 +34,7 @@ class Placement:
         return f"Placement({', '.join(f'{name}={value!r}' for name, value in stated.items() if value is not None)})"
 
     def with_env(self, **env: str) -> Self:
-        """This claim plus ``env``, winning per key, for variables a config file cannot hold.
-
-        A run id or a coordinator address is not knowable until a run starts, so the driver derives
-        a new claim rather than reaching the merge through a second path.
-        """
+        """This claim plus ``env``, winning per key, for variables a config file cannot hold."""
         return replace(self, env={**(self.env or {}), **env})
 
     def options(

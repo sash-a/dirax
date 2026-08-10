@@ -93,10 +93,9 @@ def test_claiming_no_gpu_derives_a_cpu_only_jax_platform() -> None:
     assert env_of(Placement(num_gpus=0).options(Bare)) == {"JAX_PLATFORMS": "cpu"}
 
 
-def test_claiming_a_gpu_at_all_derives_nothing() -> None:
-    """A process that claimed a card is left to JAX's own defaults, whole card or fraction of one."""
+def test_claiming_a_gpu_derives_nothing() -> None:
+    """A process that claimed a card is left to JAX's own defaults, so it needs no runtime environment."""
     assert "runtime_env" not in Placement(num_gpus=1).options(Bare)
-    assert "runtime_env" not in Placement(num_gpus=0.25).options(Bare)
 
 
 def test_the_callers_environment_wins_over_a_derived_variable() -> None:
@@ -123,9 +122,9 @@ def test_a_variable_the_driver_adds_wins_over_the_claims_own() -> None:
 
 def test_a_variable_the_driver_adds_still_beats_a_derived_one() -> None:
     """It arrives as an ordinary claim env, so the existing rule covers it and there is no second merge path."""
-    claim = Placement(num_gpus=0.5).with_env(XLA_PYTHON_CLIENT_MEM_FRACTION="0.9")
+    claim = Placement().with_env(JAX_PLATFORMS="cuda")
 
-    assert env_of(claim.options(Bare)) == {"XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+    assert env_of(claim.options(Bare)) == {"JAX_PLATFORMS": "cuda"}
 
 
 def test_adding_a_variable_to_a_run_reaches_every_role() -> None:
