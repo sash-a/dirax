@@ -12,7 +12,6 @@ class InferenceServer[Obs, O: PolicyOutput]:
     """A `LocalPolicy` behind RPC; refreshes params on its own cadence."""
 
     RAY_OPTIONS: ClassVar[Behaviour] = {}
-    """Its concurrency plausibly scales with the cohort it serves, which a constant cannot express."""
 
     def __init__(self, policy: LocalPolicy[Obs, O]) -> None:
         raise NotImplementedError

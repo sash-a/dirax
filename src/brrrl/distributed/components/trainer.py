@@ -15,7 +15,6 @@ class Trainer[S: LearnerState, T: Trajectory]:
     """Pulls stacked trajectories off echo, updates, publishes params."""
 
     RAY_OPTIONS: ClassVar[Behaviour] = {"max_restarts": 0}
-    """A restarted Trainer has lost the run's learner state, so a dead one ends the run."""
 
     learner: Learner[S, T]
     server: Server

@@ -25,7 +25,6 @@ class CheckpointStore:
         "max_task_retries": 0,
         "allow_out_of_order_execution": False,
     }
-    """Fire-and-forget saves rest on ordering, and a retried actor task is always executed out of order."""
 
     def __init__(self, build_checkpointer: Callable[[], Checkpointer]) -> None:
         self.checkpointer = build_checkpointer()

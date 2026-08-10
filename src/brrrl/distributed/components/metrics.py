@@ -18,7 +18,6 @@ class RayMetricCollector:
     """
 
     RAY_OPTIONS: ClassVar[Behaviour] = {"max_concurrency": 1}
-    """The backend is written without a lock, so a second thread would race it."""
 
     def __init__(self, build_collector: Callable[[], MetricCollector]) -> None:
         self.collector = build_collector()
