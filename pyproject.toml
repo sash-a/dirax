@@ -23,6 +23,7 @@ dependencies = [
     "distrax>=0.1.5",
     # Other
     "etils[epath]>=1.14.0",
+    "tqdm>=4.67",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any, Literal
 
 import ray
@@ -29,6 +29,11 @@ class Placement:
     label_selector: Mapping[str, str] | None = None
     accelerator_type: str | None = None
     env: Mapping[str, str] | None = None
+
+    def __str__(self) -> str:
+        """Only what was claimed, since a Placement is mostly unset and this labels a progress bar."""
+        stated = {field.name: getattr(self, field.name) for field in fields(self)}
+        return f"Placement({', '.join(f'{name}={value!r}' for name, value in stated.items() if value is not None)})"
 
     def options(
         self, component: type[Component], group: PlacementGroup | None = None, index: int = -1

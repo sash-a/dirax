@@ -21,10 +21,6 @@ from brrrl.distributed.placement.preflight import Placed, Unplaceable, preflight
 WATCHED = ("JAX_PLATFORMS", "XLA_PYTHON_CLIENT_MEM_FRACTION", "BRRRL_JOB_WIDE")
 
 
-def silent(line: str) -> None:
-    """Narration the tests below do not assert on."""
-
-
 class Probe:
     """A Component that reports what it was actually given."""
 
@@ -52,7 +48,7 @@ def test_a_satisfiable_claim_clears_the_preflight(cluster: None) -> None:
     claim = Placement(num_cpus=1)
     probe = claim.apply(Probe).remote()
 
-    preflight([Placed("probe", claim, probe)], timeout=60, narrate=silent)
+    preflight([Placed("probe", claim, probe)], timeout=60)
 
 
 def test_an_unsatisfiable_claim_fails_with_the_claim_beside_what_the_cluster_offers(cluster: None) -> None:
@@ -61,23 +57,25 @@ def test_an_unsatisfiable_claim_fails_with_the_claim_beside_what_the_cluster_off
     probe = claim.apply(Probe).remote()
 
     with pytest.raises(Unplaceable) as failure:
-        preflight([Placed("probe", claim, probe)], timeout=2, narrate=silent)
+        preflight([Placed("probe", claim, probe)], timeout=2)
 
     assert "probe" in str(failure.value)
     assert "learnr" in str(failure.value)
     assert "CPU" in str(failure.value)
 
 
-def test_the_wait_is_narrated_while_a_claim_is_pending(cluster: None) -> None:
+def test_the_wait_is_narrated_while_a_claim_is_pending(cluster: None, capsys: pytest.CaptureFixture[str]) -> None:
     """Queueing for capacity on a shared cluster is normal, and must look different from a broken run."""
-    lines: list[str] = []
     claim = Placement(resources={"learnr": 1})
     probe = claim.apply(Probe).remote()
 
     with pytest.raises(Unplaceable):
-        preflight([Placed("probe", claim, probe)], timeout=2, interval=0.5, narrate=lines.append)
+        preflight([Placed("probe", claim, probe)], timeout=2, interval=0.5)
 
-    assert [line for line in lines if "probe" in line]
+    narration = capsys.readouterr().err  # tqdm writes its bar to stderr.
+
+    assert "learnr" in narration
+    assert "component" in narration  # tqdm's own unit, so the bar carried it and not a Ray warning.
 
 
 def test_a_reservation_is_confirmed_and_its_bundles_are_the_claim(cluster: None) -> None:
@@ -85,7 +83,7 @@ def test_a_reservation_is_confirmed_and_its_bundles_are_the_claim(cluster: None)
     claim = Placement(num_cpus=1)
     group = reserve(claim, size=2)
 
-    preflight([Placed("gang", claim, group)], timeout=60, narrate=silent)
+    preflight([Placed("gang", claim, group)], timeout=60)
     bundles = group.bundle_specs
     remove_placement_group(group)  # A reservation holds its resources until removed.
 
@@ -99,7 +97,7 @@ def test_a_labelled_claim_places_its_gang_members_inside_the_reservation(cluster
     group = reserve(claim, size=2)
     member = claim.apply(Probe, group, index=1).remote()
 
-    preflight([Placed("gang", claim, group), Placed("member", claim, member)], timeout=60, narrate=silent)
+    preflight([Placed("gang", claim, group), Placed("member", claim, member)], timeout=60)
     assigned, _ = ray.get(member.report.remote())
     remove_placement_group(group)
 

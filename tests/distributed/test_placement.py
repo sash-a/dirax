@@ -57,6 +57,12 @@ def test_a_claim_reaches_the_scheduler_under_rays_own_names() -> None:
     assert {key: options[key] for key in CLAIM} == CLAIM
 
 
+def test_a_claim_reads_as_only_what_it_claimed() -> None:
+    """It labels a progress bar and names a failure, and a Placement is mostly unset."""
+    assert str(Placement()) == "Placement()"
+    assert str(Placement(num_cpus=1, resources={"learnr": 1})) == "Placement(num_cpus=1, resources={'learnr': 1})"
+
+
 def test_every_claim_field_is_either_scheduled_or_the_environment() -> None:
     """Forces a new field to be classified rather than silently ignored by the merge."""
     assert {field.name for field in fields(Placement)} == set(CLAIM) | {"env"}

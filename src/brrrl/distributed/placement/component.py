@@ -19,7 +19,7 @@ class Component(Protocol):
     """A class Ray places as its own process.
 
     One member, so ``type[Component]`` rejects a class that never decided what its correctness
-    requires. An empty declaration is a decision; a missing one is an oversight.
+    requires.
     """
 
     RAY_OPTIONS: ClassVar[Behaviour]
