@@ -16,6 +16,13 @@ from ray.util.placement_group import remove_placement_group
 from brrrl.distributed.placement.placement import Placement, reserve
 from brrrl.distributed.placement.preflight import Placed, Unplaceable, preflight
 
+GIVE_UP = 0.5
+"""How long to let an unsatisfiable claim sit before the deadline passes.
+
+Nothing races it: the claims below name a resource no node has, so the wait is spent waiting
+either way and only its length is ours to pick.
+"""
+
 
 @pytest.fixture(scope="module")
 def cluster() -> Iterator[None]:
@@ -43,7 +50,7 @@ def test_an_unsatisfiable_claim_fails_with_the_claim_beside_what_the_cluster_off
     probe = claim.apply(Probe).remote()
 
     with pytest.raises(Unplaceable) as failure:
-        preflight([Placed("probe", claim, probe)], timeout=2)
+        preflight([Placed("probe", claim, probe)], timeout=GIVE_UP)
 
     assert "probe" in str(failure.value)
     assert "learnr" in str(failure.value)
@@ -56,7 +63,7 @@ def test_the_wait_is_narrated_while_a_claim_is_pending(cluster: None, capsys: py
     probe = claim.apply(Probe).remote()
 
     with pytest.raises(Unplaceable):
-        preflight([Placed("probe", claim, probe)], timeout=2, interval=0.5)
+        preflight([Placed("probe", claim, probe)], timeout=GIVE_UP, interval=GIVE_UP / 5)
 
     narration = capsys.readouterr().err  # tqdm writes its bar to stderr.
 

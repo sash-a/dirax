@@ -21,6 +21,7 @@ dependencies = [
     # RL libs
     "gymnasium>=1.2.0",
     "distrax>=0.1.5",
+    "rlax>=0.1.9",
     # Other
     "etils[epath]>=1.14.0",
     "tqdm>=4.67",
@@ -31,6 +32,7 @@ dev = [
     "brrrl[mlflow,wandb]",
     "pre-commit>=4.0",
     "pytest>=7.0",
+    "pytest-xdist>=3.6",
     "ruff>=0.6",
     "ty>=0.0.60"
 ]
@@ -59,7 +61,9 @@ ban-relative-imports = "all"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers --strict-config"
+# One worker per core, grouped by module so a module-scoped fixture is built once. `-n0` to run
+# in process, which is quicker for a single file and is what a debugger needs.
+addopts = "--strict-markers --strict-config -n auto --dist loadscope"
 
 [tool.codespell]
 skip = "uv.lock,*.ipynb,.git,.venv,.ruff_cache"
