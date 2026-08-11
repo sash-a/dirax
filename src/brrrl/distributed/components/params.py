@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Literal, overload
 
 from ray.actor import ActorHandle
 
@@ -39,5 +39,9 @@ class RayParamSink:
 class RayParamSource:
     store: ActorHandle
 
+    @overload
+    def get(self, block: Literal[True]) -> VersionedParams: ...
+    @overload
+    def get(self, block: Literal[False]) -> VersionedParams | None: ...
     def get(self, block: bool) -> VersionedParams | None:
         raise NotImplementedError

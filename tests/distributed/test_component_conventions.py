@@ -7,15 +7,18 @@ impossible to instantiate, should fail here rather than surface as a hang on a c
 
 import ast
 from pathlib import Path
+from typing import Any
 
 import brrrl.distributed.components
+from brrrl.acting.policy import Policy
 from brrrl.distributed.components.actor import Actor
 from brrrl.distributed.components.checkpointer import CheckpointStore
-from brrrl.distributed.components.inference_server import InferenceServer
+from brrrl.distributed.components.inference_server import InferenceServer, InferenceServerPolicy
 from brrrl.distributed.components.metrics import RayMetricCollector
-from brrrl.distributed.components.params import ParamStore
+from brrrl.distributed.components.params import ParamStore, RayParamSink, RayParamSource
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.placement.component import Behaviour, Component
+from brrrl.params import ParamSink, ParamSource
 
 COMPONENTS: tuple[type[Component], ...] = (
     Actor,
@@ -26,6 +29,18 @@ COMPONENTS: tuple[type[Component], ...] = (
     Trainer,
 )
 """Every class in the package Ray places. Typed, so `ty` rejects one that declares no behaviour."""
+
+
+def views(
+    source: RayParamSource, sink: RayParamSink, policy: InferenceServerPolicy[Any, Any]
+) -> tuple[ParamSource, ParamSink, Policy[Any, Any]]:
+    """Never called: the return type is what makes `ty` hold each client half to the protocol it
+    is a view of.
+
+    Nothing in one process ever assigns one of these to its protocol, so a signature that drifted
+    from it would otherwise surface as a failure on a cluster.
+    """
+    return source, sink, policy
 
 
 def test_every_class_is_either_a_component_or_a_view_of_one() -> None:
