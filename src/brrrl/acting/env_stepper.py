@@ -46,21 +46,13 @@ class EnvStepper[Obs, Act](Protocol):
 class GymStepper[Obs, Act]:
     """One `gym.Env` presented as an `EnvStepper`: ``num_envs=1``.
 
-    Gymnasium's own `Autoreset` is the next-step discipline — it resets on the step *after* a
-    terminal one, returning a zero reward and no flags — so this stepper implements none of it and
-    holds no bookkeeping of its own. That the wrapper is next-step rather than same-step is held to
-    gymnasium's vector env by test, since the wrapper carries no mode to assert.
-
-    The statistics wrapper sits inside the autoreset one, so it never receives the ignored step.
-    That is why its episode statistics are exact with no previous-dones bookkeeping.
+    Wraps the provided env in an autoreset and metrics wrapper for bookkeeping.
     """
 
     def __init__(self, env: gym.Env) -> None:
         if owned := [wrapper.__name__ for wrapper in applied(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
             raise ValueError(
-                f"{owned} already wraps this env, and a stepper applies both itself. A second "
-                f"autoreset inserts an extra ignored step, and a second statistics wrapper reports "
-                f"the wrong episode; neither says so. Pass the env without them."
+                f"{owned} already wraps this env, and ``GymStepper`` applies that itself. Pass the env without it."
             )
         self.env = gym.wrappers.Autoreset(gym.wrappers.RecordEpisodeStatistics(env))
 
@@ -127,10 +119,8 @@ def applied(env: gym.Env) -> Iterator[type[gym.Wrapper]]:
 
 
 def widened(info: dict[str, Any]) -> dict[str, Any]:
-    """One env's episode statistics in the vector schema: full-width fields, and the mask naming it.
-
-    The single-env statistics wrapper reports scalars and no mask, so this is what a stepper owes a
-    Roller for `finished_episodes` to stay the only place that knows the schema.
+    """The single-env statistics wrapper reports scalars and no mask, so this is what a stepper owes
+    a Roller for `finished_episodes` to stay the only place that knows the schema.
     """
     if EPISODE_STATS not in info:
         return info

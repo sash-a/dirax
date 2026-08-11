@@ -27,19 +27,17 @@ class Policy[Obs, O: PolicyOutput](Protocol):
 
 
 class LocalPolicy[Obs, O: PolicyOutput]:
-    """Owns its params and its keys, so a Roller holds no jax state and no param concept.
+    """Owns its params and its key, so a Roller holds no jax state and no param concept.
 
     Its first params are pulled on construction rather than at the first Sync point, because the
     driver has already seeded the Store — which is what lets a Sync point never block.
     """
 
-    def __init__(self, act_fn: ActFn[Obs, O], source: ParamSource, key: PRNGKey, keys_per_refill: int = 512) -> None:
+    def __init__(self, act_fn: ActFn[Obs, O], source: ParamSource, key: PRNGKey) -> None:
         self.act_fn = act_fn
         self.source = source
         self.key = key
-        self.keys_per_refill = keys_per_refill
         self.params = source.get(block=True)
-        self.refill()
 
     def sync(self) -> Version:
         """Never blocks: staleness has no reason to become a stall."""
@@ -48,19 +46,8 @@ class LocalPolicy[Obs, O: PolicyOutput]:
         return self.params.version
 
     def act(self, observation: Obs) -> tuple[O, Version]:
-        """Syncs first, so new params reach a rollout the step after they land rather than the next
+        """Syncs first, so a publish reaches a rollout the step after it lands rather than the next
         Trajectory. One device-to-host transfer for the whole tree, not one per leaf per step."""
         version = self.sync()
-        return jax.device_get(self.act_fn(self.params.value, observation, self.next_key())), version
-
-    def next_key(self) -> PRNGKey:
-        if self.used == len(self.keys):
-            self.refill()
-        key = self.keys[self.used]
-        self.used += 1
-        return key
-
-    def refill(self) -> None:
-        """One split per refill rather than one per step, the first key carrying on as the next seed."""
-        keys = jax.random.split(self.key, self.keys_per_refill + 1)
-        self.key, self.keys, self.used = keys[0], keys[1:], 0
+        self.key, key = jax.random.split(self.key)
+        return jax.device_get(self.act_fn(self.params.value, observation, key)), version

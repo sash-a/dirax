@@ -6,9 +6,9 @@ source, and a Roller has no param concept at all. The obvious alternative —
 a rollout loop but cannot express an inference server, which owns its weights and
 would have to pretend to accept them over the wire.
 
-The key went the same way, and for the same reason: a Policy mints its own in
-bulk, so a Roller holds no jax state either and an inference server can own the
-one key its batched call is drawn under.
+The key went the same way, and for the same reason: a Policy carries its own and
+splits it per act, so a Roller holds no jax state either and an inference server
+can own the one key its batched call is drawn under.
 
 This is what makes `LocalPolicy` and `InferenceServerPolicy` interchangeable to
 any Roller, which is the property the whole acting layer is built around.

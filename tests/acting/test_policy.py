@@ -112,9 +112,10 @@ def test_act_returns_host_arrays() -> None:
     assert not isinstance(action, jax.Array)
 
 
-def test_keys_advance_and_do_not_repeat_across_a_refill() -> None:
-    """Minted in bulk — one split per refill rather than one per step — and still never reused."""
-    policy = LocalPolicy(keyed, seeded(), jax.random.key(0), keys_per_refill=2)
+def test_keys_advance_and_never_repeat() -> None:
+    """A Roller supplies no key, so a Policy carrying its own is the only thing keeping the stream
+    of one act independent of the last."""
+    policy = LocalPolicy(keyed, seeded(), jax.random.key(0))
 
     actions = [acted(policy) for _ in range(5)]
 
