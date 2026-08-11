@@ -131,7 +131,7 @@ class Stepping:
     versions: list[int]
     reads: int = 0
 
-    def get(self, block: bool = False) -> VersionedParams:
+    def get(self, block: bool) -> VersionedParams:
         version = self.versions[min(self.reads, len(self.versions) - 1)]
         self.reads += 1
         return VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version)

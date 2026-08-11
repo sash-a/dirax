@@ -41,7 +41,7 @@ class LocalPolicy[Obs, O: PolicyOutput]:
 
     def sync(self) -> Version:
         """Never blocks: staleness has no reason to become a stall."""
-        if (latest := self.source.get()) is not None:
+        if (latest := self.source.get(block=False)) is not None:
             self.params = latest
         return self.params.version
 

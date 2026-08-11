@@ -32,8 +32,8 @@ class Scripted:
     @overload
     def get(self, block: Literal[True]) -> VersionedParams: ...
     @overload
-    def get(self, block: Literal[False] = False) -> VersionedParams | None: ...
-    def get(self, block: bool = False) -> VersionedParams | None:
+    def get(self, block: Literal[False]) -> VersionedParams | None: ...
+    def get(self, block: bool) -> VersionedParams | None:
         """Nothing new, once the script runs out."""
         return self.updates.pop(0) if self.updates else None
 

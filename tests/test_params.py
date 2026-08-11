@@ -36,5 +36,5 @@ def test_a_reader_in_this_process_is_never_told_there_is_nothing_new() -> None:
     return. A Mirror across the cluster is where a reader can genuinely find nothing."""
     store = seeded()
 
-    assert store.get() is not None
+    assert store.get(block=False) is not None
     assert store.get(block=True).version == 0

@@ -10,9 +10,13 @@ class ParamSource(Protocol):
     @overload
     def get(self, block: Literal[True]) -> VersionedParams: ...
     @overload
-    def get(self, block: Literal[False] = False) -> VersionedParams | None: ...
-    def get(self, block: bool = False) -> VersionedParams | None:
-        """The latest params, or None where nothing new has landed and the caller would not wait."""
+    def get(self, block: Literal[False]) -> VersionedParams | None: ...
+    def get(self, block: bool) -> VersionedParams | None:
+        """The latest params, or None where nothing new has landed and the caller would not wait.
+
+        Stated at every call, because it is the return type that turns on it rather than a default
+        anyone would want.
+        """
         ...
 
 
@@ -31,7 +35,7 @@ class InMemoryParamStore:
 
     params: VersionedParams
 
-    def get(self, block: bool = False) -> VersionedParams:
+    def get(self, block: bool) -> VersionedParams:
         """Never None: nothing can land while a caller in this process waits, so nothing is waited on."""
         return self.params
 

@@ -23,7 +23,7 @@ class ParamStore:
     def publish(self, params: Params) -> Version:
         return self.store.publish(params)
 
-    def get(self, block: bool = False) -> VersionedParams | None:
+    def get(self, block: bool) -> VersionedParams | None:
         return self.store.get(block)
 
 
@@ -39,5 +39,5 @@ class RayParamSink:
 class RayParamSource:
     store: ActorHandle
 
-    def get(self, block: bool = False) -> VersionedParams | None:
+    def get(self, block: bool) -> VersionedParams | None:
         raise NotImplementedError
