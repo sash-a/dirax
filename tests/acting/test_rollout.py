@@ -11,6 +11,7 @@ assert the layout against our own assumption about autoreset, and that assumptio
 what was wrong twice while this was specified.
 """
 
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 import gymnasium as gym
@@ -25,7 +26,7 @@ from numpy.typing import ArrayLike, NDArray
 from brrrl.acting.env_stepper import EnvStepper, GymStepper, GymVectorStepper
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
-from brrrl.params import InMemoryParamStore
+from brrrl.params import InMemoryParamStore, ParamSource
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4
@@ -79,7 +80,7 @@ class Transition(NamedTuple):
 
 class Trajectory(NamedTuple):
     transitions: Transition
-    version: NDArray[np.int32]
+    version: NDArray[np.float32]
 
 
 def act_fn(params: Params, observation: NDArray, key: PRNGKey) -> Output:
@@ -112,7 +113,7 @@ def example(num_steps: int, num_envs: int) -> dict[str, Any]:
             value=zeros(np.float32),
             log_prob=zeros(np.float32),
         ),
-        "version": np.zeros((1,), np.int32),
+        "version": np.zeros((1,), np.float32),
     }
 
 
@@ -120,14 +121,33 @@ def counters() -> GymVectorStepper[NDArray, ArrayLike]:
     return GymVectorStepper(SyncVectorEnv([lambda length=length: Counter(length) for length in LENGTHS]))
 
 
+@dataclass
+class Stepping:
+    """A Source that has moved on by the time it is next read, so one rollout straddles publishes.
+
+    Its first read is the Policy's own, on construction; the reads after that are its acts.
+    """
+
+    versions: list[int]
+    reads: int = 0
+
+    def get(self, block: bool = False) -> VersionedParams:
+        version = self.versions[min(self.reads, len(self.versions) - 1)]
+        self.reads += 1
+        return VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version)
+
+
 def build(
-    num_steps: int = NUM_STEPS, version: int = 0, stepper: EnvStepper[NDArray, ArrayLike] | None = None
+    num_steps: int = NUM_STEPS,
+    version: int = 0,
+    stepper: EnvStepper[NDArray, ArrayLike] | None = None,
+    source: ParamSource | None = None,
 ) -> Roller[NDArray, Output, Trajectory]:
     stepper = counters() if stepper is None else stepper
     store = InMemoryParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
     return Roller(
         stepper=stepper,
-        policy=LocalPolicy(act_fn, store, jax.random.key(0)),
+        policy=LocalPolicy(act_fn, store if source is None else source, jax.random.key(0)),
         accumulator=TrajectoryAccumulator(example(num_steps, stepper.num_envs)),
         record=record,
         trajectory=Trajectory,
@@ -201,18 +221,29 @@ def test_the_trailing_slot_carries_the_flags_the_roller_was_already_holding() ->
     assert trajectory.transitions.reward[-1].tolist() == [0.0, 0.0]
 
 
-def test_a_trajectory_carries_exactly_one_version(roller: Roller[NDArray, Output, Trajectory]) -> None:
-    """Its staleness is then a single well-defined number, and rides in the pytree as its own Timescale."""
+def test_a_trajectory_carries_the_version_its_acts_ran_under(roller: Roller[NDArray, Output, Trajectory]) -> None:
+    """It rides in the pytree as its own Timescale, so a Trainer can log staleness across a batch
+    rather than as a second series that cannot be joined to the first."""
     trajectory, _ = roller.rollout()
 
-    assert trajectory.version.tolist() == [0]
+    assert trajectory.version.tolist() == [0.0]
 
 
-def test_the_version_is_the_one_the_policy_synced_to_at_the_start_of_the_rollout() -> None:
+def test_a_trajectory_that_spanned_no_publish_carries_that_one_version() -> None:
     """A Trajectory is stamped with the parameters that actually generated it."""
     trajectory, _ = build(version=17).rollout()
 
-    assert trajectory.version.tolist() == [17]
+    assert trajectory.version.tolist() == [17.0]
+
+
+def test_a_trajectory_that_spanned_a_publish_carries_the_mean_of_the_versions_it_acted_under() -> None:
+    """A Policy pulls at its own rate, so a rollout can straddle a publish. The mean is what makes
+    that a number a Trainer can subtract from its own Version and read as staleness."""
+    acted_under = [4, 4, 6, 6, 6]
+
+    trajectory, _ = build(source=Stepping([0, *acted_under])).rollout()
+
+    assert trajectory.version.tolist() == [pytest.approx(5.2)]
 
 
 def test_a_roller_reports_how_many_transitions_one_rollout_produces(

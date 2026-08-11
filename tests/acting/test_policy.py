@@ -34,7 +34,8 @@ class Scripted:
     @overload
     def get(self, block: Literal[False] = False) -> VersionedParams | None: ...
     def get(self, block: bool = False) -> VersionedParams | None:
-        return self.updates.pop(0)
+        """Nothing new, once the script runs out."""
+        return self.updates.pop(0) if self.updates else None
 
 
 def scaled(params: Params, observation: jax.Array, key: PRNGKey) -> Output:
@@ -52,33 +53,47 @@ def seeded(scale: float = 2.0, version: int = 0) -> InMemoryParamStore:
 
 
 def acted(policy: LocalPolicy[jax.Array, Output]) -> float:
-    return np.asarray(policy.act(OBSERVATION).action).item()
+    return np.asarray(policy.act(OBSERVATION)[0].action).item()
 
 
 def test_a_policy_acts_under_the_seeded_parameters_before_anything_is_published() -> None:
     """The driver seeds the Store, so nothing stalls at start-up waiting for a first publish."""
     policy = LocalPolicy(scaled, seeded(scale=2.0), jax.random.key(0))
 
-    assert policy.sync() == 0
-    assert acted(policy) == pytest.approx(6.0)
+    output, version = policy.act(OBSERVATION)
+
+    assert version == 0
+    assert np.asarray(output.action) == pytest.approx(6.0)
 
 
-def test_new_parameters_are_adopted_only_at_a_sync_point() -> None:
-    """A Trajectory carries exactly one Version, which is only true if acting never adopts."""
+def test_an_act_reports_the_version_of_the_parameters_behind_it() -> None:
+    """Which is what lets a Roller stamp a Trajectory without ever asking a Policy to align."""
     store = seeded(scale=2.0)
     policy = LocalPolicy(scaled, store, jax.random.key(0))
-    policy.sync()
 
     store.publish({"params": {"scale": jnp.float32(10.0)}})
+    output, version = policy.act(OBSERVATION)
 
-    assert acted(policy) == pytest.approx(6.0)
-    assert policy.sync() == 1
+    assert version == 1
+    assert np.asarray(output.action) == pytest.approx(30.0)
+
+
+def test_a_policy_adopts_new_parameters_as_soon_as_they_land() -> None:
+    """When to align is the Policy's own business, and pulling at the act rate is the fastest a
+    published update can reach a rollout: the step after it lands, not the Trajectory after."""
+    store = seeded(scale=2.0)
+    policy = LocalPolicy(scaled, store, jax.random.key(0))
+
+    before = acted(policy)
+    store.publish({"params": {"scale": jnp.float32(10.0)}})
+
+    assert before == pytest.approx(6.0)
     assert acted(policy) == pytest.approx(30.0)
 
 
 def test_a_sync_point_that_finds_nothing_new_leaves_the_current_parameters_in_place() -> None:
     """A Sync point never blocks, so an Actor keeps producing while it waits for the next publish."""
-    source = Scripted([VersionedParams({"params": {"scale": jnp.float32(2.0)}}, 7), None, None])
+    source = Scripted([VersionedParams({"params": {"scale": jnp.float32(2.0)}}, 7)])
     policy = LocalPolicy(scaled, source, jax.random.key(0))
 
     assert policy.sync() == 7
@@ -91,7 +106,7 @@ def test_act_returns_host_arrays() -> None:
     could return nothing else."""
     policy = LocalPolicy(scaled, seeded(), jax.random.key(0))
 
-    action = policy.act(OBSERVATION).action
+    action = policy.act(OBSERVATION)[0].action
 
     assert isinstance(action, np.ndarray)
     assert not isinstance(action, jax.Array)

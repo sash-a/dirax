@@ -27,7 +27,7 @@ class PPOTransition(NamedTuple):
 
 class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
-    version: NDArray[np.int32]
+    version: NDArray[np.float32]
 
 
 class PPOLearnerState(NamedTuple):

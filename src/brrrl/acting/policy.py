@@ -17,12 +17,12 @@ type ActFn[Obs, O: PolicyOutput] = Callable[[Params, Obs, PRNGKey], O]
 
 
 class Policy[Obs, O: PolicyOutput](Protocol):
-    def sync(self) -> Version:
-        """Align with the latest params and report the version now being acted under."""
-        ...
+    def act(self, observation: Obs) -> tuple[O, Version]:
+        """Act on host arrays and return them, beside the Version the params behind them carry.
 
-    def act(self, observation: Obs) -> O:
-        """Act on host arrays and return them, holding no key and no params of the caller's."""
+        When to align with new params is the Policy's own business, so nothing here forces a Sync
+        point — and a remote Policy reports its Version on a call it was making anyway.
+        """
         ...
 
 
@@ -47,9 +47,11 @@ class LocalPolicy[Obs, O: PolicyOutput]:
             self.params = latest
         return self.params.version
 
-    def act(self, observation: Obs) -> O:
-        """One device-to-host transfer for the whole tree, rather than one per leaf per step."""
-        return jax.device_get(self.act_fn(self.params.value, observation, self.next_key()))
+    def act(self, observation: Obs) -> tuple[O, Version]:
+        """Syncs first, so new params reach a rollout the step after they land rather than the next
+        Trajectory. One device-to-host transfer for the whole tree, not one per leaf per step."""
+        version = self.sync()
+        return jax.device_get(self.act_fn(self.params.value, observation, self.next_key())), version
 
     def next_key(self) -> PRNGKey:
         if self.used == len(self.keys):

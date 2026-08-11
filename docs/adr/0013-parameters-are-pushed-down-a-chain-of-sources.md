@@ -73,7 +73,9 @@ Staleness therefore stays comparable across a restart.
 The driver also runs the Learner's init and seeds the Store, so nothing stalls at
 start-up waiting for a first publish. That is what lets a Sync point never block: a
 Policy pulls once when it is built and from then on only adopts what has already
-landed.
+landed. Because that check costs a zero-timeout wait, a Policy can afford to take
+it on every act, which is the fastest a publish can reach a rollout — the step
+after it lands rather than the Trajectory after.
 
 ## Consequences
 

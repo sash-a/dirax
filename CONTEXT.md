@@ -76,9 +76,9 @@ so a Roller reads them the same way whatever built the environments.
 _Avoid_: Env, environment wrapper, vectoriser
 
 **Sync point**:
-The moment a Policy aligns with the latest parameters and reports the Version it
-is now acting under. Once per Trajectory, so a Trajectory has exactly one
-Version.
+The moment a Policy adopts the latest parameters. When to take one is the
+Policy's own business — as often as every act — so a Trajectory reports the mean
+Version its acts ran under rather than one taken on the way in.
 _Avoid_: Refresh, pull, update
 
 ### Networks

@@ -52,6 +52,14 @@ def test_a_single_environment_is_an_ordinary_vectorised_one() -> None:
     assert observation.shape[0] == 1
 
 
+@pytest.mark.parametrize("wrapper", [gym.wrappers.Autoreset, gym.wrappers.RecordEpisodeStatistics])
+def test_an_env_that_already_carries_a_stepper_owned_wrapper_is_refused(wrapper: type[gym.Wrapper]) -> None:
+    """A stepper applies both of these itself. A second autoreset inserts an extra ignored step and
+    a second statistics wrapper reports the wrong episode, and neither of them says so."""
+    with pytest.raises(ValueError, match=wrapper.__name__):
+        GymStepper(wrapper(gym.make("CartPole-v1")))
+
+
 def test_a_single_env_stepper_puts_an_env_axis_on_every_field() -> None:
     """The one API a Roller steps: whatever built the environments, every field leads with envs.
 

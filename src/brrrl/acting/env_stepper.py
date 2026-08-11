@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any, Protocol
 
 import gymnasium as gym
@@ -22,6 +22,9 @@ EPISODE_MASK = "_episode"
 EPISODE_METRICS = {"r": "episode_return", "l": "episode_length", "t": "episode_time"}
 """The vector episode-statistics schema, and what each of its fields is reported as."""
 
+OWNED_WRAPPERS = (gym.wrappers.Autoreset, gym.wrappers.RecordEpisodeStatistics)
+"""What a stepper applies itself, and so must not be handed a second copy of."""
+
 
 class EnvStepper[Obs, Act](Protocol):
     """The gymnasium step API, with a leading env axis on every field.
@@ -43,15 +46,23 @@ class EnvStepper[Obs, Act](Protocol):
 class GymStepper[Obs, Act]:
     """One `gym.Env` presented as an `EnvStepper`: ``num_envs=1``.
 
-    It implements next-step autoreset itself rather than asserting one, so the step whose action
-    the env ignores is the step it resets on. The env behind the statistics wrapper therefore never
-    receives that step, which is why its episode statistics are exact with no previous-dones
-    bookkeeping — the same property an own vectoriser would inherit.
+    Gymnasium's own `Autoreset` is the next-step discipline — it resets on the step *after* a
+    terminal one, returning a zero reward and no flags — so this stepper implements none of it and
+    holds no bookkeeping of its own. That the wrapper is next-step rather than same-step is held to
+    gymnasium's vector env by test, since the wrapper carries no mode to assert.
+
+    The statistics wrapper sits inside the autoreset one, so it never receives the ignored step.
+    That is why its episode statistics are exact with no previous-dones bookkeeping.
     """
 
     def __init__(self, env: gym.Env) -> None:
-        self.env = gym.wrappers.RecordEpisodeStatistics(env)
-        self.done = False
+        if owned := [wrapper.__name__ for wrapper in applied(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
+            raise ValueError(
+                f"{owned} already wraps this env, and a stepper applies both itself. A second "
+                f"autoreset inserts an extra ignored step, and a second statistics wrapper reports "
+                f"the wrong episode; neither says so. Pass the env without them."
+            )
+        self.env = gym.wrappers.Autoreset(gym.wrappers.RecordEpisodeStatistics(env))
 
     @property
     def num_envs(self) -> int:
@@ -59,14 +70,10 @@ class GymStepper[Obs, Act]:
 
     def reset(self) -> tuple[Obs, dict[str, Any]]:
         observation, info = self.env.reset()
-        self.done = False
         return self.batched(observation), info
 
     def step(self, action: Act) -> StepResult[Obs]:
-        if self.done:
-            return self.autoreset()
         observation, reward, terminated, truncated, info = self.env.step(np.asarray(action)[0])
-        self.done = terminated or truncated
         return (
             self.batched(observation),
             np.array([reward], np.float64),
@@ -74,12 +81,6 @@ class GymStepper[Obs, Act]:
             np.array([truncated]),
             widened(info),
         )
-
-    def autoreset(self) -> StepResult[Obs]:
-        """The step the env ignores: a new episode's first observation, no reward and no flags."""
-        observation, _ = self.env.reset()
-        self.done = False
-        return self.batched(observation), np.zeros(1), np.zeros(1, np.bool_), np.zeros(1, np.bool_), {}
 
     def batched(self, observation: Any) -> Any:
         """A leading env axis of one, in a fresh array: a Roller carries an observation across a step,
@@ -116,6 +117,13 @@ class GymVectorStepper[Obs, Act]:
 
     def step(self, action: Act) -> StepResult[Obs]:
         return self.env.step(action)
+
+
+def applied(env: gym.Env) -> Iterator[type[gym.Wrapper]]:
+    """Every wrapper already around ``env``, outermost first."""
+    while isinstance(env, gym.Wrapper):
+        yield type(env)
+        env = env.env
 
 
 def widened(info: dict[str, Any]) -> dict[str, Any]:

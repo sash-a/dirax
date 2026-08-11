@@ -43,8 +43,11 @@ class Trajectory(Protocol):
     @property
     def transitions(self) -> Transition: ...
     @property
-    def version(self) -> NDArray[np.int32]:
-        """The single-item Timescale holding the one Version the whole Trajectory was acted under."""
+    def version(self) -> NDArray[np.float32]:
+        """The single-item Timescale holding the mean Version this Trajectory's acts ran under.
+
+        A mean, and so not an integer: a Policy may adopt new params part-way through a rollout.
+        """
         ...
 
 

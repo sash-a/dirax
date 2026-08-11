@@ -14,11 +14,14 @@ type RecordFn[Obs, O: PolicyOutput] = Callable[
 
 
 class Roller[Obs, O: PolicyOutput, T: Trajectory]:
-    """The one rollout loop, shared by every algorithm and jax-free.
+    """The one rollout loop, shared by every algorithm.
 
     It owns the autoreset discipline, the trailing slot, the Version stamp and the episode
     statistics, so none of those can drift between algorithms. What an algorithm brings is a
     `record` function and the `trajectory` type to rebuild at the end, and nothing else.
+
+    A Policy adopts new params at whatever rate it likes, so the stamp is the mean of the Versions
+    its acts actually ran under rather than one taken on the way in.
 
     Its environments are reset once, here, so consecutive Trajectories are one unbroken stream of
     interaction. The Trajectory it returns aliases the accumulator's buffers, so a caller finishes
@@ -51,20 +54,21 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         return self.num_steps * self.stepper.num_envs
 
     def rollout(self) -> tuple[T, Metrics]:
-        version = self.policy.sync()
-        self.accumulator.add(VERSION, np.full(1, version, np.int32))
-
-        infos = []
+        infos, versions = [], []
         for _ in range(self.num_steps):
-            output = self.policy.act(self.prev_obs)
+            output, version = self.policy.act(self.prev_obs)
             observation, reward, terminated, truncated, info = self.stepper.step(output.action)
             transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, reward, output)
             self.accumulator.add(TRANSITIONS, transition)
             self.prev_obs, self.prev_term, self.prev_trunc = observation, terminated, truncated
             infos.append(info)
+            versions.append(version)
 
-        trailing = self.policy.act(self.prev_obs)
+        trailing, version = self.policy.act(self.prev_obs)
         no_reward = np.zeros(self.stepper.num_envs)
         transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, no_reward, trailing)
         self.accumulator.add(TRANSITIONS, transition)
+        versions.append(version)
+
+        self.accumulator.add(VERSION, np.array([np.mean(versions)], np.float32))
         return self.trajectory(**self.accumulator.build()), finished_episodes(infos)

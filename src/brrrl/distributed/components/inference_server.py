@@ -19,7 +19,7 @@ class InferenceServer[Obs, O: PolicyOutput]:
     def version(self) -> Version:
         raise NotImplementedError
 
-    def act(self, observations: Obs) -> O:
+    def act(self, observations: Obs) -> tuple[O, Version]:
         """Keys are the server's own: batching across Actors already makes such a run non-reproducible."""
         raise NotImplementedError
 
@@ -30,8 +30,6 @@ class InferenceServerPolicy[Obs, O: PolicyOutput]:
 
     server: ActorHandle
 
-    def sync(self) -> Version:
-        raise NotImplementedError
-
-    def act(self, observation: Obs) -> O:
+    def act(self, observation: Obs) -> tuple[O, Version]:
+        """The Version rides back on a call the client was making anyway, so aligning costs nothing."""
         raise NotImplementedError

@@ -47,14 +47,25 @@ directly, and lets a recurrent Learner scan `T+1` steps in one pass instead of
 scanning `T` and hand-running the last step with the scan's final carry.
 
 It costs one wasted slot's worth of action and log_prob — about 0.8% of the wire at
-`T=128` — and one extra act call per rollout. Reusing the previous rollout's last
-output instead would put two Versions in one Trajectory and break ADR-0003.
+`T=128` — and one extra act call per rollout. That act could in principle be saved:
+the trailing slot's observation is the next Trajectory's first slot, so the output
+would serve twice. It is not worth a Roller carrying a policy output across the
+boundary alongside its observation and flags, and the reused value would have been
+computed under older params than the slot it landed in.
 
-`version` is a bare `NDArray[np.int32]` of shape `(1,)`. It needs no container type
-because ADR-0002 binds only pytree containers, and `Version` is already the scalar
-alias. Carrying it inside the Trajectory rather than beside it is what lets a
+`version` is a bare `NDArray[np.float32]` of shape `(1,)`. It needs no container
+type because ADR-0002 binds only pytree containers, and `Version` is already the
+scalar alias. Carrying it inside the Trajectory rather than beside it is what lets a
 Trainer log a staleness distribution across a batch instead of two series that
 cannot be joined.
+
+Floating point, because it is a **mean**: a Policy adopts new params at whatever
+rate it likes, so a rollout can straddle a publish and the slots of one Trajectory
+need not share a Version. The alternative — a per-step Version on the buffered
+timescale — keeps integers and lets a Trainer take any statistic it wants, at
+`T+1` more leaves and a Trajectory whose staleness is no longer one number. Take
+that trade only when the spread turns out to matter, which shipping the mean is
+enough to find out.
 
 The wire form is the `Trajectory` type, not the accumulator's dict: optree flattens
 a sorted-key dict and a field-ordered NamedTuple to different leaf orders, and
