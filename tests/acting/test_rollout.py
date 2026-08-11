@@ -20,12 +20,12 @@ import numpy as np
 import pytest
 from echo import TrajectoryAccumulator
 from gymnasium.vector import SyncVectorEnv
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
-from brrrl.acting.env_stepper import GymVectorStepper
-from brrrl.acting.params import InMemoryParamStore
+from brrrl.acting.env_stepper import EnvStepper, GymStepper, GymVectorStepper
 from brrrl.acting.policy import LocalPolicy
-from brrrl.acting.roller import Rollout
+from brrrl.acting.roller import Roller
+from brrrl.params import InMemoryParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4
@@ -98,9 +98,9 @@ def record(
     return Transition(observation, terminated, truncated, reward, output.action, output.value, output.log_prob)
 
 
-def example(num_steps: int) -> dict[str, Any]:
+def example(num_steps: int, num_envs: int) -> dict[str, Any]:
     def zeros(dtype: Any, *trailing: int) -> NDArray:
-        return np.zeros((num_steps + 1, NUM_ENVS, *trailing), dtype)
+        return np.zeros((num_steps + 1, num_envs, *trailing), dtype)
 
     return {
         "transitions": Transition(
@@ -116,12 +116,19 @@ def example(num_steps: int) -> dict[str, Any]:
     }
 
 
-def build(num_steps: int = NUM_STEPS, version: int = 0) -> Rollout[NDArray, Output, Trajectory]:
+def counters() -> GymVectorStepper[NDArray, ArrayLike]:
+    return GymVectorStepper(SyncVectorEnv([lambda length=length: Counter(length) for length in LENGTHS]))
+
+
+def build(
+    num_steps: int = NUM_STEPS, version: int = 0, stepper: EnvStepper[NDArray, ArrayLike] | None = None
+) -> Roller[NDArray, Output, Trajectory]:
+    stepper = counters() if stepper is None else stepper
     store = InMemoryParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
-    return Rollout(
-        stepper=GymVectorStepper(SyncVectorEnv([lambda length=length: Counter(length) for length in LENGTHS])),
+    return Roller(
+        stepper=stepper,
         policy=LocalPolicy(act_fn, store, jax.random.key(0)),
-        accumulator=TrajectoryAccumulator(example(num_steps)),
+        accumulator=TrajectoryAccumulator(example(num_steps, stepper.num_envs)),
         record=record,
         trajectory=Trajectory,
         num_steps=num_steps,
@@ -129,12 +136,12 @@ def build(num_steps: int = NUM_STEPS, version: int = 0) -> Rollout[NDArray, Outp
 
 
 @pytest.fixture
-def roller() -> Rollout[NDArray, Output, Trajectory]:
+def roller() -> Roller[NDArray, Output, Trajectory]:
     return build()
 
 
 def test_a_slot_holds_an_observation_and_the_flags_that_describe_it(
-    roller: Rollout[NDArray, Output, Trajectory],
+    roller: Roller[NDArray, Output, Trajectory],
 ) -> None:
     """The Final obs and the flag saying so are never in different slots, which is what makes the
     unusable slot readable off the flags already in it — a shift of zero rather than of one."""
@@ -146,7 +153,7 @@ def test_a_slot_holds_an_observation_and_the_flags_that_describe_it(
 
 
 def test_the_reward_action_and_value_in_a_slot_describe_the_transition_out_of_it(
-    roller: Rollout[NDArray, Output, Trajectory],
+    roller: Roller[NDArray, Output, Trajectory],
 ) -> None:
     """The other half of the alignment: the reward is what the slot's action earned, and the value
     is of the slot's own observation — so truncation bootstrapping reads the value beside the flag."""
@@ -160,7 +167,7 @@ def test_the_reward_action_and_value_in_a_slot_describe_the_transition_out_of_it
 
 
 def test_the_final_obs_slot_is_a_real_observation_with_a_real_value(
-    roller: Rollout[NDArray, Output, Trajectory],
+    roller: Roller[NDArray, Output, Trajectory],
 ) -> None:
     """ADR-0001: only the action and reward beside it are meaningless. Optimising the slot away, or
     filling its observation with the reset that follows, is what this pins down."""
@@ -173,7 +180,7 @@ def test_the_final_obs_slot_is_a_real_observation_with_a_real_value(
     assert trajectory.transitions.reward[ended, terminal] == 0.0
 
 
-def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Rollout[NDArray, Output, Trajectory]) -> None:
+def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Roller[NDArray, Output, Trajectory]) -> None:
     """T+1 in one Timescale, so an Estimator slices a single values array instead of stitching a
     bootstrap onto it. Filled rather than reserved: a loop that stopped at T would leave the last
     slot holding the buffer's zeros, which no observation of this env ever is."""
@@ -194,7 +201,7 @@ def test_the_trailing_slot_carries_the_flags_the_roller_was_already_holding() ->
     assert trajectory.transitions.reward[-1].tolist() == [0.0, 0.0]
 
 
-def test_a_trajectory_carries_exactly_one_version(roller: Rollout[NDArray, Output, Trajectory]) -> None:
+def test_a_trajectory_carries_exactly_one_version(roller: Roller[NDArray, Output, Trajectory]) -> None:
     """Its staleness is then a single well-defined number, and rides in the pytree as its own Timescale."""
     trajectory, _ = roller.rollout()
 
@@ -209,14 +216,14 @@ def test_the_version_is_the_one_the_policy_synced_to_at_the_start_of_the_rollout
 
 
 def test_a_roller_reports_how_many_transitions_one_rollout_produces(
-    roller: Rollout[NDArray, Output, Trajectory],
+    roller: Roller[NDArray, Output, Trajectory],
 ) -> None:
     """The Step axis advances by a count the Roller owns. The trailing slot is never stepped, so it
     is not one of them."""
     assert roller.num_transitions == NUM_STEPS * NUM_ENVS
 
 
-def test_only_completed_episodes_are_reported(roller: Rollout[NDArray, Output, Trajectory]) -> None:
+def test_only_completed_episodes_are_reported(roller: Roller[NDArray, Output, Trajectory]) -> None:
     """One env ran two steps and returned 11+12, the other three and returned 11+12+13."""
     _, metrics = roller.rollout()
 
@@ -229,6 +236,28 @@ def test_a_rollout_in_which_nothing_finished_reports_nothing() -> None:
     _, metrics = build(num_steps=1).rollout()
 
     assert metrics == {}
+
+
+def test_one_env_behind_either_stepper_produces_the_same_trajectory() -> None:
+    """The single-env stepper implements next-step autoreset itself rather than asserting one, so
+    gymnasium's own vector autoreset is the oracle it is held to — the same oracle the layout was
+    settled against. A hand-rolled reset that fired a step early would diverge here."""
+    single, _ = build(stepper=GymStepper(Counter(LENGTHS[0]))).rollout()
+    vector, _ = build(stepper=GymVectorStepper(SyncVectorEnv([lambda: Counter(LENGTHS[0])]))).rollout()
+
+    for one, many in zip(single.transitions, vector.transitions, strict=True):
+        np.testing.assert_array_equal(one, many)
+
+
+def test_one_env_behind_either_stepper_reports_the_same_episodes() -> None:
+    """A sub-env behind the single-env statistics wrapper never receives the ignored step, so its
+    statistics need no previous-dones bookkeeping to agree with the vector wrapper's."""
+    _, single = build(stepper=GymStepper(Counter(LENGTHS[0]))).rollout()
+    _, vector = build(stepper=GymVectorStepper(SyncVectorEnv([lambda: Counter(LENGTHS[0])]))).rollout()
+
+    assert single.keys() == vector.keys()
+    assert np.asarray(single["episode_return"]).tolist() == np.asarray(vector["episode_return"]).tolist()
+    assert np.asarray(single["episode_length"]).tolist() == np.asarray(vector["episode_length"]).tolist()
 
 
 def test_consecutive_rollouts_are_one_unbroken_stream_of_environment_interaction() -> None:

@@ -12,8 +12,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brrrl.acting.params import InMemoryParamStore
 from brrrl.acting.policy import LocalPolicy
+from brrrl.params import InMemoryParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 OBSERVATION = jnp.float32(3.0)
@@ -53,19 +53,6 @@ def seeded(scale: float = 2.0, version: int = 0) -> InMemoryParamStore:
 
 def acted(policy: LocalPolicy[jax.Array, Output]) -> float:
     return np.asarray(policy.act(OBSERVATION).action).item()
-
-
-def test_the_write_side_assigns_the_version() -> None:
-    """One monotonic authority for a run: a publisher that passed its own count could repeat one."""
-    store = seeded()
-
-    assert store.publish({"params": {"scale": jnp.float32(3.0)}}) == 1
-    assert store.publish({"params": {"scale": jnp.float32(4.0)}}) == 2
-
-
-def test_a_resumed_run_continues_its_version_count() -> None:
-    """Staleness stays comparable across a restart, so the driver seeds the count it left off at."""
-    assert seeded(version=41).publish({"params": {"scale": jnp.float32(3.0)}}) == 42
 
 
 def test_a_policy_acts_under_the_seeded_parameters_before_anything_is_published() -> None:

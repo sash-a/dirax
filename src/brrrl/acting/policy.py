@@ -1,21 +1,19 @@
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Protocol
 
 import jax
 
-from brrrl.acting.params import ParamSource
-from brrrl.types import Array, Params, PRNGKey, Version, VersionedParams
+from brrrl.params import ParamSource
+from brrrl.types import Array, Params, PRNGKey, Version
 
 
 class PolicyOutput(Protocol):
     @property
-    def action(self) -> Array:
-        """Either residency: an act function builds this on the device, a Roller reads it on the host."""
-        ...
+    def action(self) -> Array: ...
 
 
 type ActFn[Obs, O: PolicyOutput] = Callable[[Params, Obs, PRNGKey], O]
+"""The jittable half, where params and a key stay explicit because a Policy is what supplies them."""
 
 
 class Policy[Obs, O: PolicyOutput](Protocol):
@@ -28,24 +26,23 @@ class Policy[Obs, O: PolicyOutput](Protocol):
         ...
 
 
-@dataclass
 class LocalPolicy[Obs, O: PolicyOutput]:
-    """Owns its params and its keys, so a Roller holds no jax state and no param concept."""
+    """Owns its params and its keys, so a Roller holds no jax state and no param concept.
 
-    act_fn: ActFn[Obs, O]
-    source: ParamSource
-    key: PRNGKey
-    keys_per_refill: int = 512
-    params: VersionedParams = field(init=False)
-    keys: PRNGKey = field(init=False)
-    used: int = field(init=False, default=0)
+    Its first params are pulled on construction rather than at the first Sync point, because the
+    driver has already seeded the Store — which is what lets a Sync point never block.
+    """
 
-    def __post_init__(self) -> None:
-        self.params = self.source.get(block=True)
+    def __init__(self, act_fn: ActFn[Obs, O], source: ParamSource, key: PRNGKey, keys_per_refill: int = 512) -> None:
+        self.act_fn = act_fn
+        self.source = source
+        self.key = key
+        self.keys_per_refill = keys_per_refill
+        self.params = source.get(block=True)
         self.refill()
 
     def sync(self) -> Version:
-        """Never blocks: the driver seeded the Store, so staleness has no reason to become a stall."""
+        """Never blocks: staleness has no reason to become a stall."""
         if (latest := self.source.get()) is not None:
             self.params = latest
         return self.params.version

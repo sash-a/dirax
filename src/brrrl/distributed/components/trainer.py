@@ -3,10 +3,10 @@ from typing import ClassVar
 
 from echo import Server
 
-from brrrl.acting.params import ParamSink
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.learning.learner import Learner
 from brrrl.metrics.collector import MetricRecorder
+from brrrl.params import ParamSink
 from brrrl.types import LearnerState, Trajectory
 
 

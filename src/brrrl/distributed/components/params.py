@@ -3,8 +3,8 @@ from typing import ClassVar
 
 from ray.actor import ActorHandle
 
-from brrrl.acting.params import InMemoryParamStore
 from brrrl.distributed.placement.component import Behaviour
+from brrrl.params import InMemoryParamStore
 from brrrl.types import Params, Version, VersionedParams
 
 

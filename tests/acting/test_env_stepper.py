@@ -7,10 +7,11 @@ the failure the check exists to turn into a refusal.
 """
 
 import gymnasium as gym
+import numpy as np
 import pytest
 from gymnasium.vector import AutoresetMode, VectorEnv
 
-from brrrl.acting.env_stepper import GymVectorStepper
+from brrrl.acting.env_stepper import GymStepper, GymVectorStepper
 
 NUM_ENVS = 2
 
@@ -49,3 +50,19 @@ def test_a_single_environment_is_an_ordinary_vectorised_one() -> None:
 
     assert stepper.num_envs == 1
     assert observation.shape[0] == 1
+
+
+def test_a_single_env_stepper_puts_an_env_axis_on_every_field() -> None:
+    """The one API a Roller steps: whatever built the environments, every field leads with envs.
+
+    Its autoreset discipline and its statistics are held to gymnasium's own vector env instead, in
+    ``test_rollout.py`` — a hand-rolled reset deserves an oracle rather than our own assertions.
+    """
+    stepper = GymStepper(gym.make("CartPole-v1"))
+
+    observation, _ = stepper.reset()
+    stepped, reward, terminated, truncated, _ = stepper.step(np.zeros(1, int))
+
+    assert stepper.num_envs == 1
+    assert observation.shape == stepped.shape == (1, 4)
+    assert reward.shape == terminated.shape == truncated.shape == (1,)
