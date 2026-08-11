@@ -11,3 +11,6 @@ wheels/
 
 # Scratch space
 .scratch/
+
+# Agent worktrees: a checkout apiece, and nothing in .claude is the project's
+.claude/worktrees/
