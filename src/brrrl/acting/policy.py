@@ -3,7 +3,7 @@ from typing import Protocol
 
 import jax
 
-from brrrl.params import ParamSource
+from brrrl.params.params import ParamSource
 from brrrl.types import Array, Params, PRNGKey, Version
 
 

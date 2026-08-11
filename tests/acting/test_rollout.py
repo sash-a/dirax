@@ -26,7 +26,7 @@ from numpy.typing import ArrayLike, NDArray
 from brrrl.acting.env_stepper import EnvStepper, GymStepper, GymVectorStepper
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
-from brrrl.params import InMemoryParamStore, ParamSource
+from brrrl.params.params import InMemoryParamStore, ParamSource
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4

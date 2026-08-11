@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from brrrl.acting.policy import LocalPolicy
-from brrrl.params import InMemoryParamStore
+from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 OBSERVATION = jnp.float32(3.0)

@@ -5,35 +5,21 @@ and are the only tests here that do. The instance is pinned rather than inherite
 host, so the same claims are satisfiable on a laptop and in CI.
 """
 
-import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import ClassVar
 
 import pytest
 import ray
+from probe import Probe
 from ray.util.placement_group import remove_placement_group
 
-from brrrl.distributed.placement.component import Behaviour
 from brrrl.distributed.placement.placement import Placement, reserve
 from brrrl.distributed.placement.preflight import Placed, Unplaceable, preflight
-
-WATCHED = ("JAX_PLATFORMS", "BRRRL_JOB_WIDE")
-
-
-class Probe:
-    """A Component that reports what it was actually given."""
-
-    RAY_OPTIONS: ClassVar[Behaviour] = {}
-
-    def report(self) -> tuple[dict[str, float], dict[str, str]]:
-        assigned = ray.get_runtime_context().get_assigned_resources()
-        return assigned, {name: os.environ[name] for name in WATCHED if name in os.environ}
 
 
 @pytest.fixture(scope="module")
 def cluster() -> Iterator[None]:
-    """``PYTHONPATH`` is what lets a worker import ``Probe`` from this file.
+    """``PYTHONPATH`` is what lets a worker import ``Probe`` from ``probe.py`` beside this file.
 
     ``BRRRL_JOB_WIDE`` rides along as an ordinary job-level variable, to be checked against the
     ones brrrl derives per role.

@@ -4,7 +4,7 @@ from typing import ClassVar, Literal, overload
 from ray.actor import ActorHandle
 
 from brrrl.distributed.placement.component import Behaviour
-from brrrl.params import InMemoryParamStore
+from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Params, Version, VersionedParams
 
 

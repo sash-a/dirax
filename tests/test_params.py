@@ -6,7 +6,7 @@ The read side is asserted through the Policy that sits at the end of the chain, 
 
 import jax.numpy as jnp
 
-from brrrl.params import InMemoryParamStore
+from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Params, VersionedParams
 
 

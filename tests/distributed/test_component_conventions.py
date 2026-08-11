@@ -18,7 +18,7 @@ from brrrl.distributed.components.metrics import RayMetricCollector
 from brrrl.distributed.components.params import ParamStore, RayParamSink, RayParamSource
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.placement.component import Behaviour, Component
-from brrrl.params import ParamSink, ParamSource
+from brrrl.params.params import ParamSink, ParamSource
 
 COMPONENTS: tuple[type[Component], ...] = (
     Actor,
