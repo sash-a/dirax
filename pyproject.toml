@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     # JAX libs
-    "jax>=0.10.0",
+    "jax>=0.10.1",
     "flax>=0.8.1",
     "optax>=0.2.4",
     "orbax-checkpoint>=0.12.0",
@@ -21,30 +21,32 @@ dependencies = [
     # RL libs
     "gymnasium>=1.2.0",
     "distrax>=0.1.5",
-    "rlax>=0.1.9",
     # Other
     "etils[epath]>=1.14.0",
     "tqdm>=4.67",
 ]
 
 [project.optional-dependencies]
+mlflow = ["mlflow>=3.0"]
+wandb = ["wandb>=0.19"]
+cuda = ["jax[cuda13]>=0.10.1"]
+
+[project.scripts]
+ppo = "brrrl.algorithms.ppo.ppo:main"
+
+# A group, not an extra: the toolchain is for working on brrrl, not for installing it, and groups
+# stay out of the built wheel's metadata.
+[dependency-groups]
 dev = [
     "brrrl[mlflow,wandb]",
     "pre-commit>=4.0",
     "pytest>=7.0",
     "pytest-xdist>=3.6",
+    # Test oracle only: our estimators are asserted against rlax's, never shipped on top of it.
+    "rlax>=0.1.9",
     "ruff>=0.6",
-    "ty>=0.0.60"
+    "ty>=0.0.60",
 ]
-mlflow = [
-    "mlflow>=3.0",
-]
-wandb = [
-    "wandb>=0.19",
-]
-
-[project.scripts]
-brrrl = "brrrl:main"
 
 [build-system]
 requires = ["uv_build>=0.11.21,<0.12.0"]
@@ -55,6 +57,7 @@ line-length = 120
 
 [tool.ruff.lint]
 extend-select = ["TID"]
+ignore=["E731"]  # allow assigning lambdas to variables
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
