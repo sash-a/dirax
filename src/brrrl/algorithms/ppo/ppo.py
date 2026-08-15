@@ -8,6 +8,7 @@ import flax.linen as nn
 import gymnasium as gym
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from echo import TrajectoryAccumulator
 from jax import tree
@@ -20,7 +21,8 @@ from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyOutput, PPOTrajectory,
 from brrrl.metrics import default_local_logger
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.metrics.wandb import WandbLogger
-from brrrl.networks.head import DiscreteHead, ValueHead
+from brrrl.networks.distribution import uniform_entropy
+from brrrl.networks.head import ContinuousHead, DiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Array, ArrayTree, Metrics, Params, PRNGKey, VersionedParams
@@ -76,7 +78,6 @@ class PPOUpdateRule:
 
     @jax.jit(static_argnames=("self",))
     def update(self, state: PPOUpdateState, trajectory: PPOTrajectory) -> tuple[PPOUpdateState, Metrics]:
-        """Slots arrive flat: an Actor folds its env axis away, so ``batch_size`` is actors x envs."""
         chex.assert_tree_shape_prefix(trajectory.transitions, (self.batch_size, self.rollout_length + 1))
         advantages = generalised_advantages(
             trajectory.transitions.reward,
@@ -147,7 +148,6 @@ class PPOUpdateRule:
         transitions = batch.transitions
         mask = ~(transitions.terminated | transitions.truncated)
         distribution, value = self.apply_fn(params, transitions.observation)
-        distribution = cast(distrax.Categorical, distribution)
 
         advantages = normalise(batch.advantages, mask)
         log_ratio = distribution.log_prob(transitions.action) - transitions.log_prob
@@ -170,7 +170,7 @@ class PPOUpdateRule:
             "policy_loss": policy_loss,
             "value_loss": value_loss,
             "entropy": entropy,
-            "normalised_entropy": entropy / jnp.log(distribution.num_categories),
+            "normalised_entropy": entropy / uniform_entropy(distribution),
             "approx_kl": jnp.mean(ratio - 1 - jnp.log(ratio), where=mask),
             "clip_fraction": jnp.mean(jnp.abs(ratio - 1) > self.policy_clip_eps, where=mask),
             "value_clip_fraction": jnp.mean(jnp.abs(drift) > self.value_clip_eps, where=mask),
@@ -178,15 +178,32 @@ class PPOUpdateRule:
         return total, metrics
 
 
+def policy_head(space: gym.Space) -> nn.Module:
+    """The Head an action space asks for, and the one place PPO's Assembly turns on which space it has."""
+    match space:
+        case gym.spaces.Discrete():
+            return DiscreteHead(int(space.n))
+        case gym.spaces.Box(shape=(num_actions,)):
+            return ContinuousHead(num_actions)
+        case _:
+            raise ValueError(f"{space} is neither discrete nor a one-dimensional Box, which is all PPO has a Head for.")
+
+
+def rescaled(env: gym.Env) -> gym.Env:
+    """A continuous env stepped in ``(-1, 1)``, which is the interval a `ContinuousHead` samples in."""
+    if isinstance(env.action_space, gym.spaces.Box):
+        return gym.wrappers.RescaleAction(env, np.float32(-1.0), np.float32(1.0))
+    return env
+
+
 def main() -> None:
-    """Train in one process, one thread."""
+    """Train on a single box."""
 
     class PPONetwork(nn.Module):
-        num_actions: int
+        policy: nn.Module
 
         def setup(self):
             self.torso = MLPTorso([64, 64], activation=jax.nn.relu, normalisation=nn.RMSNorm)
-            self.policy = DiscreteHead(self.num_actions)
             self.value = ValueHead()
 
         def __call__(self, obs: jax.Array) -> tuple[distrax.Distribution, jax.Array]:
@@ -198,18 +215,19 @@ def main() -> None:
     rollout_len = 128
     num_updates = 5000
     num_envs = 8
+    gamma = 0.99
     env_name = "Acrobot-v1"
 
     key = jax.random.key(1)
     weights_key, policy_key, update_key = jax.random.split(key, 3)
 
-    make_env = lambda: gym.make(env_name)
+    make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
-    stepper = GymVectorStepper(make_env, num_envs)
+    stepper = GymVectorStepper(make_env, num_envs, normalise_reward=True, reward_discount=gamma)
     example_transition = example(rollout_len, stepper.num_envs, env.observation_space, env.action_space)
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
-    network = PPONetwork(int(cast(gym.spaces.Discrete, env.action_space).n))
+    network = PPONetwork(policy_head(env.action_space))
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
     param_source = InMemoryParamStore(VersionedParams(params, 0))
@@ -229,7 +247,7 @@ def main() -> None:
 
     policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
     roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len)
-    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len)
+    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, gamma=gamma)
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)

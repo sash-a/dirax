@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brrrl.networks.distribution import TanhNormal
+from brrrl.networks.distribution import TanhNormal, uniform_entropy
 
 NUM_ACTIONS = 3
 MONTE_CARLO_SAMPLES = 200_000
@@ -139,3 +139,36 @@ def test_the_distribution_survives_jit() -> None:
         return TanhNormal(loc, scale).entropy()
 
     assert jnp.isfinite(entropy(jnp.zeros(NUM_ACTIONS), jnp.ones(NUM_ACTIONS))).all()
+
+
+def test_a_uniform_categorical_reads_as_exactly_one_against_its_own_uniform_entropy() -> None:
+    """Which is what an entropy normalised against it means: the log of the size, nothing else."""
+    distribution = distrax.Categorical(logits=jnp.zeros(NUM_ACTIONS))
+
+    assert jnp.isclose(uniform_entropy(distribution), jnp.log(NUM_ACTIONS))
+    assert jnp.isclose(distribution.entropy() / uniform_entropy(distribution), 1.0)
+
+
+def test_uniform_entropy_counts_every_action_axis_at_both_layouts(leading: tuple[int, ...]) -> None:
+    """A squashed Gaussian's log-probability is summed over its actions, so what an entropy is read
+    against is summed over them too, and neither depends on the leading axes."""
+    distribution = TanhNormal(jnp.zeros((*leading, NUM_ACTIONS)), jnp.ones((*leading, NUM_ACTIONS)))
+
+    assert jnp.isclose(uniform_entropy(distribution), NUM_ACTIONS * jnp.log(2.0))
+
+
+@pytest.mark.parametrize("scale", [0.1, 0.5, 0.85, 1.0, 2.0, 4.0])
+def test_no_squashed_gaussian_reaches_the_uniform_density_on_its_own_support(scale: float) -> None:
+    """What makes the ratio readable: one is the uniform policy on ``(-1, 1)`` and no scale attains
+    it, so the metric approaches one from below and can only go negative, a density not being a mass.
+    """
+    distribution = TanhNormal(jnp.zeros(NUM_ACTIONS), jnp.full(NUM_ACTIONS, scale))
+
+    assert distribution.entropy() < uniform_entropy(distribution)
+
+
+def test_a_distribution_with_no_uniform_policy_is_refused() -> None:
+    """An unbounded Gaussian has none to be read against, and normalising by a made-up constant is a
+    metric nobody can interpret."""
+    with pytest.raises(TypeError):
+        uniform_entropy(distrax.Normal(jnp.zeros(NUM_ACTIONS), jnp.ones(NUM_ACTIONS)))

@@ -100,3 +100,19 @@ class TanhNormal(distrax.Transformed):
         draws = self.loc[..., None] + math.sqrt(2.0) * self.scale[..., None] * nodes
         correction = jnp.sum(weights * self.bijector.forward_log_det_jacobian(draws), axis=-1) / math.sqrt(math.pi)
         return jnp.sum(self.distribution.entropy() + correction, axis=-1)
+
+
+def uniform_entropy(distribution: distrax.Distribution) -> jax.Array:
+    """The entropy of the uniform policy over the same support, which an entropy reads as one against.
+
+    A categorical's is the log of its size, a squashed Gaussian's that of the uniform density on
+    ``(-1, 1)`` per action. Neither policy can exceed its own; only the second can read below zero,
+    because a density is not a mass.
+    """
+    match distribution:
+        case distrax.Categorical():
+            return jnp.log(jnp.asarray(distribution.num_categories, jnp.float32))
+        case TanhNormal():
+            return jnp.asarray(distribution.loc.shape[-1] * math.log(2.0), jnp.float32)
+        case _:
+            raise TypeError(f"{type(distribution).__name__} names no uniform policy to read an entropy against.")

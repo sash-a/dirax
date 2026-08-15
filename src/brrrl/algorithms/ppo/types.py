@@ -45,14 +45,15 @@ class PPOUpdateState(NamedTuple):
 def example(rollout_length: int, num_envs: int, obs_space: gym.Space, act_space: gym.Space) -> dict[str, Any]:
     traj_len = rollout_length + 1  # because there is a final bootstrap step
     obs = tree.tree_map(lambda x: np.zeros((traj_len, num_envs, *np.shape(x)), np.asarray(x).dtype), obs_space.sample())
+    # An action slot is the action space's own shape and dtype, so a continuous one keeps its axis.
+    action = np.asarray(act_space.sample())
 
-    # TODO: support cont actions
     # Everything here has a rollout dim
     trajectory = PPOTransition(
         observation=obs,  # type: ignore
         terminated=np.empty((traj_len, num_envs), dtype=np.bool_),
         truncated=np.empty((traj_len, num_envs), dtype=np.bool_),
-        action=np.empty((traj_len, num_envs), dtype=np.int32),
+        action=np.empty((traj_len, num_envs, *action.shape), dtype=action.dtype),
         value=np.empty((traj_len, num_envs), dtype=np.float32),
         reward=np.empty((traj_len, num_envs), dtype=np.float32),
         log_prob=np.empty((traj_len, num_envs), dtype=np.float32),

@@ -93,12 +93,34 @@ class GymVectorStepper[Obs, Act]:
     instance.
     """
 
-    def __init__(self, make_env: Callable[[], gym.Env], num_envs: int) -> None:
+    def __init__(
+        self,
+        make_env: Callable[[], gym.Env],
+        num_envs: int,
+        normalise_reward: bool = False,
+        reward_discount: float = 0.99,
+    ) -> None:
+        """Vectorise ``make_env`` ``num_envs`` times, optionally scaling what the envs pay out.
+
+        Args:
+            make_env: Builds one env. Anything already vectorised, or already carrying a wrapper this
+                class owns, is refused here rather than at the first step.
+            num_envs: How many to build.
+            normalise_reward: Divide each reward by the spread of the discounted return so far. An
+                unnormalised return of a few hundred is paid for by the critic: Adam moves a value
+                head by about its learning rate per step whatever the gradient stands at, so fitting
+                one takes as many steps as the return is large.
+            reward_discount: What that running return discounts at, and so the algorithm's own gamma.
+                A mismatch scales rewards by the spread of a return nothing is estimating.
+        """
         if num_envs < 1:
             raise ValueError(f"num_envs is {num_envs}, and a stepper with no environments steps nothing.")
-        self.env = gym.wrappers.vector.RecordEpisodeStatistics(
+        stepped = gym.wrappers.vector.RecordEpisodeStatistics(
             gym.vector.SyncVectorEnv([vectorisable(make_env)] * num_envs, autoreset_mode=AutoresetMode.NEXT_STEP)
         )
+        # Statistics are taken inside the scaling, so an episode return is reported in the
+        # environment's own units while the Learner sees the scaled reward.
+        self.env = gym.wrappers.vector.NormalizeReward(stepped, reward_discount) if normalise_reward else stepped
 
     @property
     def num_envs(self) -> int:

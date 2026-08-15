@@ -25,6 +25,12 @@ def cartpoles() -> gym.vector.VectorEnv:
     return gym.make_vec("CartPole-v1", num_envs=NUM_ENVS)
 
 
+def stepped(stepper: GymVectorStepper) -> np.ndarray:
+    """What one step pays, from a fresh reset."""
+    stepper.reset()
+    return stepper.step(np.zeros(NUM_ENVS, int))[1]
+
+
 def test_a_factory_is_vectorised_to_the_count_it_was_given() -> None:
     """``num_envs`` is the second factor in a Roller's transition count, so only the stepper has it."""
     stepper = GymVectorStepper(cartpole, NUM_ENVS)
@@ -76,6 +82,33 @@ def test_the_vector_stepper_refuses_an_owned_wrapper_one_level_down(wrapper: typ
     """The vector env owns both across all of its envs, so a per-env copy is the same double-wrap."""
     with pytest.raises(ValueError, match=wrapper.__name__):
         GymVectorStepper(lambda: wrapper(gym.make("CartPole-v1")), NUM_ENVS)
+
+
+def test_normalising_rewards_leaves_the_step_alone_but_scales_what_it_pays() -> None:
+    """CartPole pays exactly one a step, so anything but one is the scaling and nothing else."""
+    plain, scaled = GymVectorStepper(cartpole, NUM_ENVS), GymVectorStepper(cartpole, NUM_ENVS, normalise_reward=True)
+
+    rewards = [stepped(stepper) for stepper in (plain, scaled)]
+
+    assert np.all(rewards[0] == 1.0)
+    assert not np.any(rewards[1] == 1.0)
+
+
+def test_an_episode_return_is_reported_in_the_environment_s_own_units() -> None:
+    """The statistics wrapper sits inside the scaling. Outside it, every run's returns would be
+    divided by a spread that moves as the policy does, and no two runs could be compared at all.
+    """
+    stepper = GymVectorStepper(cartpole, NUM_ENVS, normalise_reward=True)
+    stepper.reset()
+
+    returns = [
+        info["episode"]["r"][info["_episode"]]
+        for _ in range(600)
+        if "episode" in (info := stepper.step(np.zeros(NUM_ENVS, int))[4])
+    ]
+
+    assert returns, "no episode finished, so the assertion below would hold vacuously"
+    assert all(finished == finished.astype(int) for finished in np.concatenate(returns))
 
 
 def test_a_single_env_stepper_puts_an_env_axis_on_every_field() -> None:

@@ -2,9 +2,9 @@
 - [ ] PPO
   - [x] Implementation
   - [x] Comprehensive metrics
-  - [ ] Continuous
+  - [x] Continuous
   - [ ] Benchmarked against open RL bench
-- [ ] Agent dim to support MARL workflows
+- [ ] Agent dim to support MARL workflows + ADR
 - [ ] More algorithms:
   - [ ] Impala + VTrace
   - [ ] DQN/APEX/R2D2
