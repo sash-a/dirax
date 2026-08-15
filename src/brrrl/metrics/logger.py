@@ -20,6 +20,25 @@ class Logger(Protocol):
 
 
 @dataclass
+class MultiLogger:
+    """Holds multiple loggers and logs to them all."""
+
+    loggers: list[Logger]
+
+    def log(self, metrics: Metrics, step: int) -> None:
+        for logger in self.loggers:
+            logger.log(metrics, step)
+
+    def log_artifact(self, path: epath.Path, directory: str | None = None) -> None:
+        for logger in self.loggers:
+            logger.log_artifact(path, directory)
+
+    def close(self) -> None:
+        for logger in self.loggers:
+            logger.close()
+
+
+@dataclass
 class NamespacedProcessor:
     prefix: str
     logger: Logger
