@@ -1,9 +1,9 @@
 ## Algorithms
 - [ ] PPO
   - [x] Implementation
-  - [ ] Comprehensive metrics
-  - [ ] Benchmarked against open RL bench
+  - [x] Comprehensive metrics
   - [ ] Continuous
+  - [ ] Benchmarked against open RL bench
 - [ ] Agent dim to support MARL workflows
 - [ ] More algorithms:
   - [ ] Impala + VTrace

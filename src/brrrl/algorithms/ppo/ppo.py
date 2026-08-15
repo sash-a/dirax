@@ -17,8 +17,7 @@ from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
-from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, Origin
-from brrrl.metrics.logger import MultiLogger, WindowedProcessor
+from brrrl.metrics import default_local_logger
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.metrics.wandb import WandbLogger
 from brrrl.networks.head import DiscreteHead, ValueHead
@@ -31,6 +30,7 @@ EPS = 1e-8
 
 type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 type EpochCarry = tuple[PPOUpdateState, PPOBatch]
+type LossInfo = dict[str, jax.Array]
 
 
 def normalise(advantages: Array, mask: Array) -> jax.Array:
@@ -52,7 +52,8 @@ class PPOUpdateRule:
     rollout_length: int
     num_epochs: int = 2
     num_minibatches: int = 8
-    clip_eps: float = 0.2
+    policy_clip_eps: float = 0.2
+    value_clip_eps: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     gamma: float = 0.99
@@ -65,7 +66,8 @@ class PPOUpdateRule:
             and self.num_epochs > 0
             and self.num_minibatches > 0
             and (self.batch_size * self.rollout_length) % self.num_minibatches == 0
-            and self.clip_eps > 0
+            and self.policy_clip_eps > 0
+            and self.value_clip_eps > 0
             and self.ent_coef >= 0
             and self.vf_coef >= 0
             and 0 <= self.gamma <= 1
@@ -88,11 +90,30 @@ class PPOUpdateRule:
         value_targets = advantages + trajectory.transitions.value[:, :-1]
         batch = PPOBatch(tree.map(lambda x: x[:, :-1], trajectory.transitions), advantages, value_targets)
         (state, _), loss_infos = jax.lax.scan(self.epoch, (state, batch), None, self.num_epochs)
-        # Explained variance judges the critic that produced these advantages, so it is read once,
-        # off the values the rollout acted under, rather than per minibatch off params already moving.
         mask = ~(batch.transitions.terminated | batch.transitions.truncated)
-        variance = explained_variance(value_targets, batch.transitions.value, mask)
-        return state, tree.map(jnp.mean, loss_infos) | {"explained_variance": variance}
+        return state, tree.map(jnp.mean, loss_infos) | self.batch_metrics(batch, mask) | self.drift_metrics(loss_infos)
+
+    def batch_metrics(self, batch: PPOBatch, mask: Array) -> LossInfo:
+        return {
+            "explained_variance": explained_variance(batch.value_targets, batch.transitions.value, mask),
+            "advantage_mean": jnp.mean(batch.advantages, where=mask),
+            "advantage_std": jnp.sqrt(jnp.var(batch.advantages, where=mask)),
+            "advantage_positive_fraction": jnp.mean(batch.advantages > 0, where=mask),
+            "mask_fraction": jnp.mean(mask),
+        }
+
+    def drift_metrics(self, loss_infos: LossInfo) -> LossInfo:
+        return {
+            "approx_kl_first_minibatch": loss_infos["approx_kl"][0, 0],
+            "approx_kl_last_minibatch": loss_infos["approx_kl"][-1, -1],
+        }
+
+    def minibatch_metrics(self, state: PPOUpdateState, grads: Params, updates: optax.Updates) -> LossInfo:
+        return {
+            "grad_norm": optax.tree.norm(grads),
+            "update_norm": optax.tree.norm(updates),
+            "param_norm": optax.tree.norm(state.params),
+        }
 
     def shuffle_and_minibatch(self, key: PRNGKey, batch: PPOBatch) -> PPOBatch:
         """One flat pool of steps, permuted and cut into minibatches along a new leading axis."""
@@ -108,39 +129,36 @@ class PPOUpdateRule:
             batch,
         )
 
-    def epoch(self, carry: EpochCarry, _: None) -> tuple[EpochCarry, Metrics]:
-        """The batch rides the carry unchanged: every epoch reshuffles the same steps."""
+    def epoch(self, carry: EpochCarry, _: None) -> tuple[EpochCarry, LossInfo]:
         state, batch = carry
         key, shuffle_key = jax.random.split(state.key)
         minibatches = self.shuffle_and_minibatch(shuffle_key, batch)
         state, loss_info = jax.lax.scan(self.minibatch, state._replace(key=key), minibatches)
         return (state, batch), loss_info
 
-    def minibatch(self, state: PPOUpdateState, batch: PPOBatch) -> tuple[PPOUpdateState, Metrics]:
+    def minibatch(self, state: PPOUpdateState, batch: PPOBatch) -> tuple[PPOUpdateState, LossInfo]:
         grads, loss_info = jax.grad(self.loss, has_aux=True)(state.params, batch)
         updates, opt_state = self.optimizer.update(grads, state.opt_state, state.params)
         params = cast(Params, optax.apply_updates(state.params, updates))
-        return state._replace(params=params, opt_state=opt_state), loss_info
+        metrics = loss_info | self.minibatch_metrics(state, grads, updates)
+        return state._replace(params=params, opt_state=opt_state), metrics
 
-    def loss(self, params: Params, batch: PPOBatch) -> tuple[jax.Array, Metrics]:
-        """The clipped surrogate, a clipped value term and an entropy bonus, over the real steps only.
-
-        Written out rather than taken from rlax, whose ``clipped_surrogate_pg_loss`` means over every
-        slot it is given and so cannot be told to skip a Final obs.
-        """
+    def loss(self, params: Params, batch: PPOBatch) -> tuple[jax.Array, LossInfo]:
         transitions = batch.transitions
         mask = ~(transitions.terminated | transitions.truncated)
         distribution, value = self.apply_fn(params, transitions.observation)
+        distribution = cast(distrax.Categorical, distribution)
 
         advantages = normalise(batch.advantages, mask)
         log_ratio = distribution.log_prob(transitions.action) - transitions.log_prob
         # Masked inside the exponent rather than after it: masking the result still leaves the
         # gradient multiplying a zero cotangent by an unbounded derivative, which is NaN.
         ratio = jnp.exp(jnp.where(mask, log_ratio, 0.0))
-        clipped_ratio = jnp.clip(ratio, 1 - self.clip_eps, 1 + self.clip_eps)
+        clipped_ratio = jnp.clip(ratio, 1 - self.policy_clip_eps, 1 + self.policy_clip_eps)
         policy_loss = -jnp.mean(jnp.minimum(ratio * advantages, clipped_ratio * advantages), where=mask)
 
-        clipped_value = transitions.value + jnp.clip(value - transitions.value, -self.clip_eps, self.clip_eps)
+        drift = value - transitions.value
+        clipped_value = transitions.value + jnp.clip(drift, -self.value_clip_eps, self.value_clip_eps)
 
         squared = jnp.maximum(jnp.square(value - batch.value_targets), jnp.square(clipped_value - batch.value_targets))
         value_loss = 0.5 * jnp.mean(squared, where=mask)
@@ -152,8 +170,10 @@ class PPOUpdateRule:
             "policy_loss": policy_loss,
             "value_loss": value_loss,
             "entropy": entropy,
+            "normalised_entropy": entropy / jnp.log(distribution.num_categories),
             "approx_kl": jnp.mean(ratio - 1 - jnp.log(ratio), where=mask),
-            "clip_fraction": jnp.mean(jnp.abs(ratio - 1) > self.clip_eps, where=mask),
+            "clip_fraction": jnp.mean(jnp.abs(ratio - 1) > self.policy_clip_eps, where=mask),
+            "value_clip_fraction": jnp.mean(jnp.abs(drift) > self.value_clip_eps, where=mask),
         }
         return total, metrics
 
@@ -214,11 +234,11 @@ def main() -> None:
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
 
-    backend = MultiLogger([StdoutLogger(), WandbLogger("brrrl", tags=["PPO", env_name])])
-    logger = WindowedProcessor(backend, roller.num_transitions * 20)
-    metric_collector = MetricCollector({Origin.ACTOR: logger, Origin.LEARNER: logger})
-    actor_recorder = LocalMetricRecorder(metric_collector, Origin.ACTOR)
-    learner_recorder = LocalMetricRecorder(metric_collector, Origin.LEARNER)
+    actor_recorder, learner_recorder = default_local_logger(
+        StdoutLogger(),
+        WandbLogger("brrrl", tags=["PPO", env_name]),
+        log_every=roller.num_transitions * 20,
+    )
 
     for i in range(num_updates):
         trajectory, act_metrics = roller.rollout()

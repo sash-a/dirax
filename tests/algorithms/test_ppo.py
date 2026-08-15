@@ -9,6 +9,7 @@ The Assembly here is a test double: ADR-0008 leaves Assembly to each algorithm, 
 critic beside the actor because its Roller needs a value at act time.
 """
 
+from dataclasses import replace
 from typing import cast
 
 import flax.linen as nn
@@ -64,7 +65,8 @@ def rule(apply_fn: PPOApply) -> PPOUpdateRule:
     return PPOUpdateRule(
         apply_fn=apply_fn,
         optimizer=optax.adam(1e-3),
-        clip_eps=0.2,
+        policy_clip_eps=0.2,
+        value_clip_eps=0.2,
         ent_coef=0.01,
         vf_coef=0.5,
         batch_size=BATCH,
@@ -160,9 +162,20 @@ def test_metrics_are_scalars_the_collector_can_take(rule: PPOUpdateRule, state, 
         "policy_loss",
         "value_loss",
         "entropy",
+        "normalised_entropy",
         "approx_kl",
         "clip_fraction",
+        "value_clip_fraction",
+        "grad_norm",
+        "update_norm",
+        "param_norm",
         "explained_variance",
+        "advantage_mean",
+        "advantage_std",
+        "advantage_positive_fraction",
+        "mask_fraction",
+        "approx_kl_first_minibatch",
+        "approx_kl_last_minibatch",
     }
     assert all(np.ndim(value) == 0 for value in metrics.values())
 
@@ -179,11 +192,63 @@ def test_repeated_updates_descend(rule: PPOUpdateRule, state, trajectory) -> Non
 
 
 def test_a_fresh_discrete_policy_is_near_uniform(rule: PPOUpdateRule, state, trajectory) -> None:
-    """Entropy is read off the distribution rather than recomputed, so it starts at log(actions)."""
+    """Entropy is read off the distribution rather than recomputed, so it starts at log(actions),
+    which is the whole of a uniform policy's and so reads as one against it."""
     batch = PPOBatch(*from_trajectory(rule, trajectory))
     _, metrics = rule.loss(state.params, batch)
 
     assert np.isclose(metrics["entropy"], np.log(ACTIONS), atol=1e-2)
+    assert np.isclose(metrics["normalised_entropy"], 1.0, atol=1e-2)
+
+
+def test_the_update_brackets_its_own_walk_from_the_behaviour_policy(rule: PPOUpdateRule, state, trajectory) -> None:
+    """The first minibatch is the only one taken before any step has moved the params, so its KL is
+    zero outright rather than merely small. What the last one reads is the drift the whole point of
+    ``num_epochs`` is to trade against, and a mean over every minibatch shows neither."""
+    _, metrics = rule.update(state, trajectory)
+
+    assert np.isclose(metrics["approx_kl_first_minibatch"], 0.0, atol=1e-6)
+    assert metrics["approx_kl_last_minibatch"] > 0
+
+
+def test_mask_fraction_counts_the_slots_the_loss_is_allowed(rule: PPOUpdateRule, state, trajectory) -> None:
+    """One termination and one truncation, both inside the sliced batch."""
+    _, metrics = rule.update(state, trajectory)
+
+    assert np.isclose(metrics["mask_fraction"], (BATCH * ROLLOUT - 2) / (BATCH * ROLLOUT))
+
+
+def test_each_clip_epsilon_bounds_only_its_own_term(rule: PPOUpdateRule, state, trajectory) -> None:
+    """One bounds a dimensionless ratio, the other a drift in return units. Sharing one epsilon ties
+    how hard the critic is clipped to whatever scale the environment's rewards happen to have."""
+    moved, _ = rule.update(state, trajectory)
+    batch = PPOBatch(*from_trajectory(rule, trajectory))
+
+    _, tight = replace(rule, value_clip_eps=1e-8).loss(moved.params, batch)
+    _, loose = replace(rule, value_clip_eps=1e8).loss(moved.params, batch)
+
+    assert np.isclose(tight["value_clip_fraction"], 1.0)
+    assert np.isclose(loose["value_clip_fraction"], 0.0)
+    assert tight["clip_fraction"] == loose["clip_fraction"]
+
+
+def test_the_value_clip_cannot_bind_at_the_behaviour_critic(rule: PPOUpdateRule, state, trajectory) -> None:
+    """These values are the ones the critic itself produced, so there is nothing for it to drift from."""
+    batch = PPOBatch(*from_trajectory(rule, trajectory))
+    _, metrics = rule.loss(state.params, batch)
+
+    assert np.isclose(metrics["value_clip_fraction"], 0.0)
+
+
+def test_the_step_taken_is_reported_beside_the_gradient_that_asked_for_it(rule, state, trajectory) -> None:
+    """Adam rescales per parameter, so what moved the weights is not the learning rate times the
+    gradient, and only the step's own norm says how far they actually travelled."""
+    _, slow = rule.update(state, trajectory)
+    quick = replace(rule, optimizer=optax.adam(1e-1))
+    _, fast = quick.update(state._replace(opt_state=quick.optimizer.init(state.params)), trajectory)
+
+    assert slow["grad_norm"] > 0 and slow["param_norm"] > 0
+    assert fast["update_norm"] > slow["update_norm"]
 
 
 def test_shuffling_loses_no_step_and_duplicates_none(rule: PPOUpdateRule, trajectory) -> None:
