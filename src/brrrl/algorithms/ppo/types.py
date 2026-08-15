@@ -1,21 +1,21 @@
 from typing import Any, NamedTuple
 
+import gymnasium as gym
 import numpy as np
 import optax
+import optree as tree
 from numpy.typing import NDArray
 
-from brrrl.types import Array, ArrayTree, Params, PRNGKey
+from brrrl.types import TRANSITIONS, VERSION, Array, ArrayTree, Params, PRNGKey
 
 
-class PPOOutput(NamedTuple):
+class PPOPolicyOutput(NamedTuple):
     action: Array
     log_prob: Array
     value: Array
 
 
 class PPOTransition(NamedTuple):
-    """One slot, in the order it aligns. Stacked to ``(T+1, E, ...)`` as the buffered timescale."""
-
     observation: ArrayTree
     terminated: NDArray[np.bool_]
     truncated: NDArray[np.bool_]
@@ -30,12 +30,34 @@ class PPOTrajectory(NamedTuple):
     version: NDArray[np.float32]
 
 
-class PPOLearnerState(NamedTuple):
+class PPOBatch(NamedTuple):
+    transitions: PPOTransition
+    advantages: Array
+    value_targets: Array
+
+
+class PPOUpdateState(NamedTuple):
     params: Params
     opt_state: optax.OptState
     key: PRNGKey
 
 
-def example(num_steps: int, num_envs: int, obs_shape: tuple[int, ...]) -> dict[str, Any]:
-    """Zero-filled timescales; shared verbatim by the accumulator, client and server."""
-    raise NotImplementedError
+def example(rollout_length: int, num_envs: int, obs_space: gym.Space, act_space: gym.Space) -> dict[str, Any]:
+    traj_len = rollout_length + 1  # because there is a final bootstrap step
+    obs = tree.tree_map(lambda x: np.zeros((traj_len, num_envs, *np.shape(x)), np.asarray(x).dtype), obs_space.sample())
+
+    # TODO: support cont actions
+    # Everything here has a rollout dim
+    trajectory = PPOTransition(
+        observation=obs,  # type: ignore
+        terminated=np.empty((traj_len, num_envs), dtype=np.bool_),
+        truncated=np.empty((traj_len, num_envs), dtype=np.bool_),
+        action=np.empty((traj_len, num_envs), dtype=np.int32),
+        value=np.empty((traj_len, num_envs), dtype=np.float32),
+        reward=np.empty((traj_len, num_envs), dtype=np.float32),
+        log_prob=np.empty((traj_len, num_envs), dtype=np.float32),
+    )
+
+    param_generation = np.empty((), dtype=np.float32)
+
+    return {TRANSITIONS: trajectory, VERSION: param_generation}

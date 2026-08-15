@@ -44,10 +44,7 @@ class Trajectory(Protocol):
     def transitions(self) -> Transition: ...
     @property
     def version(self) -> NDArray[np.float32]:
-        """The single-item Timescale holding the mean Version this Trajectory's acts ran under.
-
-        A mean, and so not an integer: a Policy may adopt new params part-way through a rollout.
-        """
+        """The Version this Trajectory's acts ran under."""
         ...
 
 
@@ -56,6 +53,11 @@ class VersionedParams(NamedTuple):
     version: Version
 
 
-class LearnerState(Protocol):
+class UpdateState(Protocol):
     @property
     def params(self) -> Params: ...
+
+
+class UpdateRule[S: UpdateState, T: Trajectory](Protocol):
+    def update(self, state: S, batch: T) -> tuple[S, Metrics]: ...
+    def isvalid(self) -> bool: ...
