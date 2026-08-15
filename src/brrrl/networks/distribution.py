@@ -105,14 +105,27 @@ class TanhNormal(distrax.Transformed):
 def uniform_entropy(distribution: distrax.Distribution) -> jax.Array:
     """The entropy of the uniform policy over the same support, which an entropy reads as one against.
 
-    A categorical's is the log of its size, a squashed Gaussian's that of the uniform density on
-    ``(-1, 1)`` per action. Neither policy can exceed its own; only the second can read below zero,
-    because a density is not a mass.
+    A categorical's is the log of how many actions it leaves legal, which is all of them until a
+    mask sets the rest to negative infinity — so this is per state rather than per policy. A squashed
+    Gaussian's is that of the uniform density on ``(-1, 1)`` per action. Neither policy can exceed
+    its own; only the second can read below zero, because a density is not a mass.
     """
     match distribution:
         case distrax.Categorical():
-            return jnp.log(jnp.asarray(distribution.num_categories, jnp.float32))
+            return jnp.log(jnp.sum(jnp.isfinite(jnp.asarray(distribution.logits)), axis=-1))
         case TanhNormal():
             return jnp.asarray(distribution.loc.shape[-1] * math.log(2.0), jnp.float32)
         case _:
             raise TypeError(f"{type(distribution).__name__} names no uniform policy to read an entropy against.")
+
+
+def normalised_entropy(distribution: distrax.Distribution) -> jax.Array:
+    """Entropy read against the uniform policy over the same support, per state.
+
+    A state leaving one action legal reads as one rather than as the zero over zero it is: a forced
+    move says nothing about whether a policy has collapsed, so it is the one value that leaves the
+    average undisturbed. A state leaving none stays undefined, because that is a broken environment
+    rather than a degenerate state, and it should be as loud here as it is everywhere else.
+    """
+    uniform = uniform_entropy(distribution)
+    return jnp.where(uniform == 0, 1.0, jnp.asarray(distribution.entropy()) / uniform)

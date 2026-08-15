@@ -6,12 +6,14 @@ a *reset* observation into a slot flagged terminated — wrong data that still t
 the failure the check exists to turn into a refusal.
 """
 
+from typing import cast
+
 import gymnasium as gym
 import numpy as np
 import pytest
 from gymnasium.vector import AutoresetMode
 
-from brrrl.acting.env_stepper import GymStepper, GymVectorStepper
+from brrrl.acting.env_stepper import GymStepper, GymVectorStepper, applied
 
 NUM_ENVS = 2
 
@@ -23,6 +25,26 @@ def cartpole() -> gym.Env:
 def cartpoles() -> gym.vector.VectorEnv:
     """The factory a caller reaches for out of habit, which the stepper has to refuse."""
     return gym.make_vec("CartPole-v1", num_envs=NUM_ENVS)
+
+
+def normalising_cartpole() -> gym.Env:
+    """The composition a run scaling its rewards writes: statistics under the scaling, both in the
+    factory, because only what builds an env knows what else is transforming it."""
+    return gym.wrappers.NormalizeReward(gym.wrappers.RecordEpisodeStatistics(cartpole()))
+
+
+def scaled_vector() -> GymVectorStepper:
+    return GymVectorStepper(normalising_cartpole, NUM_ENVS)
+
+
+def scaled_single() -> GymStepper:
+    return GymStepper(normalising_cartpole())
+
+
+def scaled_across_envs() -> GymVectorStepper:
+    """The seam: one transform over all the envs at once, applied where the statistics are already
+    under it. Nothing about the reward is the stepper's to know."""
+    return GymVectorStepper(cartpole, NUM_ENVS, wrap=gym.wrappers.vector.NormalizeReward)
 
 
 def stepped(stepper: GymVectorStepper) -> np.ndarray:
@@ -69,24 +91,27 @@ def test_a_single_environment_is_an_ordinary_vectorised_one() -> None:
     assert observation.shape[0] == 1
 
 
-@pytest.mark.parametrize("wrapper", [gym.wrappers.Autoreset, gym.wrappers.RecordEpisodeStatistics])
-def test_an_env_that_already_carries_a_stepper_owned_wrapper_is_refused(wrapper: type[gym.Wrapper]) -> None:
-    """A stepper applies both of these itself. A second autoreset inserts an extra ignored step and
-    a second statistics wrapper reports the wrong episode, and neither of them says so."""
-    with pytest.raises(ValueError, match=wrapper.__name__):
-        GymStepper(wrapper(gym.make("CartPole-v1")))
+def test_an_env_that_already_carries_a_stepper_owned_wrapper_is_refused() -> None:
+    """The autoreset is the stepper's, because the Trajectory layout rests on it (ADR-0001). A second
+    one inserts an extra ignored step, and says nothing about it."""
+    with pytest.raises(ValueError, match=gym.wrappers.Autoreset.__name__):
+        GymStepper(gym.wrappers.Autoreset(gym.make("CartPole-v1")))
 
 
-@pytest.mark.parametrize("wrapper", [gym.wrappers.Autoreset, gym.wrappers.RecordEpisodeStatistics])
-def test_the_vector_stepper_refuses_an_owned_wrapper_one_level_down(wrapper: type[gym.Wrapper]) -> None:
-    """The vector env owns both across all of its envs, so a per-env copy is the same double-wrap."""
-    with pytest.raises(ValueError, match=wrapper.__name__):
-        GymVectorStepper(lambda: wrapper(gym.make("CartPole-v1")), NUM_ENVS)
+def test_the_vector_stepper_refuses_an_owned_wrapper_one_level_down() -> None:
+    """The vector env owns the autoreset across all of its envs, so a per-env copy is the same
+    double-wrap."""
+    with pytest.raises(ValueError, match=gym.wrappers.Autoreset.__name__):
+        GymVectorStepper(lambda: gym.wrappers.Autoreset(gym.make("CartPole-v1")), NUM_ENVS)
 
 
-def test_normalising_rewards_leaves_the_step_alone_but_scales_what_it_pays() -> None:
-    """CartPole pays exactly one a step, so anything but one is the scaling and nothing else."""
-    plain, scaled = GymVectorStepper(cartpole, NUM_ENVS), GymVectorStepper(cartpole, NUM_ENVS, normalise_reward=True)
+def test_a_reward_transform_composed_by_the_caller_reaches_the_step() -> None:
+    """CartPole pays exactly one a step, so anything but one is the caller's wrapper and nothing else.
+
+    Scaling is composed into the factory rather than asked of the stepper: what a reward means is
+    the environment's business, and a stepper that owned it would own every other transform too.
+    """
+    plain, scaled = GymVectorStepper(cartpole, NUM_ENVS), GymVectorStepper(normalising_cartpole, NUM_ENVS)
 
     rewards = [stepped(stepper) for stepper in (plain, scaled)]
 
@@ -94,21 +119,62 @@ def test_normalising_rewards_leaves_the_step_alone_but_scales_what_it_pays() -> 
     assert not np.any(rewards[1] == 1.0)
 
 
-def test_an_episode_return_is_reported_in_the_environment_s_own_units() -> None:
-    """The statistics wrapper sits inside the scaling. Outside it, every run's returns would be
-    divided by a spread that moves as the policy does, and no two runs could be compared at all.
+def test_a_wrap_is_handed_the_envs_the_stepper_built() -> None:
+    """Scaling across every env at once needs them all in one place, which only the stepper has. The
+    seam takes them without the stepper learning what a reward is: what it hands over is already
+    autoreset and already recorded, so neither of its own guarantees is on offer to break.
     """
-    stepper = GymVectorStepper(cartpole, NUM_ENVS, normalise_reward=True)
-    stepper.reset()
+    plain, scaled = GymVectorStepper(cartpole, NUM_ENVS), scaled_across_envs()
+
+    rewards = [stepped(stepper) for stepper in (plain, scaled)]
+
+    assert np.all(rewards[0] == 1.0)
+    assert not np.any(rewards[1] == 1.0)
+
+
+@pytest.mark.parametrize(
+    "stepper", [scaled_vector, scaled_single, scaled_across_envs], ids=["vector", "single", "across envs"]
+)
+def test_an_episode_return_is_reported_in_the_environment_s_own_units(stepper) -> None:
+    """The statistics are taken under the scaling. Above it, every run's returns would be divided by
+    a spread that moves as the policy does, and no two runs could be compared at all.
+    """
+    stepping = stepper()
+    stepping.reset()
 
     returns = [
         info["episode"]["r"][info["_episode"]]
         for _ in range(600)
-        if "episode" in (info := stepper.step(np.zeros(NUM_ENVS, int))[4])
+        if "episode" in (info := stepping.step(np.zeros(stepping.num_envs, int))[4])
     ]
 
     assert returns, "no episode finished, so the assertion below would hold vacuously"
     assert all(finished == finished.astype(int) for finished in np.concatenate(returns))
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda env: GymStepper(env), id="single"),
+        pytest.param(lambda env: GymVectorStepper(lambda: env, NUM_ENVS), id="vector"),
+    ],
+)
+def test_scaling_a_reward_above_the_statistics_is_refused(build) -> None:
+    """The one arrangement a stepper cannot fix for the caller: it applies statistics outermost, so
+    an env arriving already scaled has to bring its own, underneath. Getting this wrong is silent —
+    the returns still log, in units nothing downstream can convert back."""
+    with pytest.raises(ValueError, match="scaled units"):
+        build(gym.wrappers.NormalizeReward(cartpole()))
+
+
+def test_statistics_a_caller_placed_are_not_applied_twice() -> None:
+    """A second one reports the wrong episode, and says nothing about it."""
+    stepper = GymVectorStepper(normalising_cartpole, NUM_ENVS)
+
+    envs = cast(gym.vector.SyncVectorEnv, stepper.env).envs
+    recording = [wrapper for wrapper in applied(envs[0]) if wrapper is gym.wrappers.RecordEpisodeStatistics]
+
+    assert len(recording) == 1
 
 
 def test_a_single_env_stepper_puts_an_env_axis_on_every_field() -> None:

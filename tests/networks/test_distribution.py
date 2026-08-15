@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brrrl.networks.distribution import TanhNormal, uniform_entropy
+from brrrl.networks.distribution import TanhNormal, normalised_entropy, uniform_entropy
 
 NUM_ACTIONS = 3
 MONTE_CARLO_SAMPLES = 200_000
@@ -165,6 +165,42 @@ def test_no_squashed_gaussian_reaches_the_uniform_density_on_its_own_support(sca
     distribution = TanhNormal(jnp.zeros(NUM_ACTIONS), jnp.full(NUM_ACTIONS, scale))
 
     assert distribution.entropy() < uniform_entropy(distribution)
+
+
+def test_only_the_legal_actions_count_towards_a_uniform_policy() -> None:
+    """A masked action is not one the policy could have taken, so counting it would report every
+    masked state as less uniform than it is, and the metric would track the mask rather than the
+    policy."""
+    masked = distrax.Categorical(logits=jnp.array([0.0, -jnp.inf, 0.0]))
+
+    assert jnp.isclose(uniform_entropy(masked), jnp.log(2.0))
+    assert jnp.isclose(normalised_entropy(masked), 1.0)
+
+
+def test_a_state_with_one_legal_action_reads_as_uniform_rather_than_as_nothing() -> None:
+    """Its entropy is zero out of a possible zero. Reading the division as it stands gives a nan that
+    takes the whole batch's average with it, and a forced move says nothing about the policy."""
+    forced = distrax.Categorical(logits=jnp.array([-jnp.inf, 0.0, -jnp.inf]))
+
+    assert uniform_entropy(forced) == 0.0
+    assert normalised_entropy(forced) == 1.0
+
+
+def test_a_state_with_no_legal_action_stays_undefined() -> None:
+    """A broken env rather than a degenerate state: nothing downstream can act, and a metric reading
+    one here would report the healthiest possible policy for it."""
+    broken = distrax.Categorical(logits=jnp.full(NUM_ACTIONS, -jnp.inf))
+
+    assert jnp.isneginf(uniform_entropy(broken))
+    assert jnp.isnan(normalised_entropy(broken))
+
+
+def test_normalised_entropy_is_read_per_state_and_not_per_batch(leading: tuple[int, ...]) -> None:
+    """Which is what masking makes necessary: two states in one batch can leave different numbers of
+    actions legal, and one denominator for both is wrong for at least one of them."""
+    logits = jnp.zeros((*leading, NUM_ACTIONS)).at[..., 0].set(-jnp.inf)
+
+    assert normalised_entropy(distrax.Categorical(logits=logits)).shape == leading
 
 
 def test_a_distribution_with_no_uniform_policy_is_refused() -> None:

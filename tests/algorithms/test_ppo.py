@@ -5,17 +5,19 @@ pins the surrogate, the approximate KL and the clip fraction to values that can 
 than recorded. And a Final obs slot's action and reward are meaningless (ADR-0001), so filling them
 with garbage must not move a single metric — that is the whole reason the mask exists.
 
-Every one of them runs over both action spaces, because the update rule is meant to read the same
-whichever Head its Assembly ends in: a continuous action carries an axis of its own and a log
-probability summed over it, and nothing else about the loss changes.
+Every one of them runs over both kinds of environment PPO builds an Assembly for, because the update
+rule is meant to read the same whichever Head that Assembly ends in: a continuous action carries an
+axis of its own and a log probability summed over it, a masked one arrives beside its observation,
+and nothing else about the loss changes.
 
-The Assembly here is a test double: ADR-0008 leaves Assembly to each algorithm, and PPO's runs the
-critic beside the actor because its Roller needs a value at act time.
+The Assemblies are PPO's own rather than doubles, so what these properties hold for is what `main`
+runs. ADR-0008 leaves Assembly to each algorithm, and PPO's runs the critic beside the actor
+because its Roller needs a value at act time.
 """
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 import flax.linen as nn
 import gymnasium as gym
@@ -26,49 +28,59 @@ import optax
 import pytest
 
 from brrrl.algorithms.estimators import generalised_advantages
-from brrrl.algorithms.ppo.ppo import PPOApply, PPOUpdateRule, explained_variance, normalise, policy_head
+from brrrl.algorithms.ppo.ppo import PPOApply, PPONetwork, PPOUpdateRule, explained_variance, make_network, normalise
 from brrrl.algorithms.ppo.types import PPOBatch, PPOTrajectory, PPOTransition, PPOUpdateState, example
-from brrrl.networks.head import ContinuousHead, DiscreteHead, ValueHead
-from brrrl.networks.torso import MLPTorso
+from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.types import TRANSITIONS, Array
+from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 
 BATCH, ROLLOUT, OBS, ACTIONS = 4, 8, 5, 3
 SLOTS = ROLLOUT + 1
 EPOCHS, MINIBATCHES = 2, 2
 TERMINATION, TRUNCATION = (0, 6), (1, 3)
 """(row, slot) of a Final obs of each kind, so both boundaries are exercised."""
+ILLEGAL = ACTIONS - 1
+"""Masked off everywhere in the masked case, so every property below is held over a mask that binds."""
+
+
+def legal_actions(shape: tuple[int, ...]) -> np.ndarray:
+    return np.ones((*shape, ACTIONS), np.int8) * np.array([action != ILLEGAL for action in range(ACTIONS)], np.int8)
 
 
 class Space(NamedTuple):
-    """One action space's half of what a shared test needs: the Head PPO's Assembly ends in, and a
-    different action to write into a slot, which is a neighbouring category or a mirrored vector."""
+    """One environment's half of what a shared test needs: the spaces PPO builds an Assembly from,
+    an observation of the shape that Assembly reads, and a different action to write into a slot,
+    which is a neighbouring category or a mirrored vector."""
 
-    head: Callable[[], nn.Module]
+    observation_space: gym.Space
+    action_space: gym.Space
+    observation: Callable[[jax.Array], Any]
     foul: Callable[[Array], Array]
 
 
+PLAIN_SPACE = gym.spaces.Box(-1.0, 1.0, (OBS,))
+MASKED_SPACE = gym.spaces.Dict({OBSERVATION: PLAIN_SPACE, ACTION_MASK: gym.spaces.MultiBinary(ACTIONS)})
+
 SPACES = {
-    "discrete": Space(lambda: DiscreteHead(ACTIONS), lambda action: (action + 1) % ACTIONS),
-    "continuous": Space(lambda: ContinuousHead(ACTIONS), lambda action: -action),
+    "discrete": Space(
+        PLAIN_SPACE, gym.spaces.Discrete(ACTIONS), lambda array: array, lambda action: (action + 1) % ACTIONS
+    ),
+    "masked": Space(
+        MASKED_SPACE,
+        gym.spaces.Discrete(ACTIONS),
+        lambda array: {OBSERVATION: array, ACTION_MASK: legal_actions(array.shape[:-1])},
+        lambda action: (action + 1) % ACTIONS,
+    ),
+    "continuous": Space(
+        PLAIN_SPACE, gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), lambda array: array, lambda action: -action
+    ),
 }
 
 
-class Assembly(nn.Module):
-    """PPO's Assembly: a distribution and a value from one embedding. Which Head it ends in is the
-    only thing an action space changes about it."""
-
-    head: nn.Module
-
-    @nn.compact
-    def __call__(self, observation: jax.Array):
-        embedding = MLPTorso(layer_sizes=(8,))(observation)
-        return self.head(embedding), ValueHead()(embedding)
-
-
-def rule_over(assembly: Assembly) -> PPOUpdateRule:
+def rule_over(network: nn.Module) -> PPOUpdateRule:
     """The rule under test, over whichever Assembly it is handed."""
     return PPOUpdateRule(
-        apply_fn=cast(PPOApply, assembly.apply),
+        apply_fn=cast(PPOApply, network.apply),
         optimizer=optax.adam(1e-3),
         policy_clip_eps=0.2,
         value_clip_eps=0.2,
@@ -83,15 +95,15 @@ def rule_over(assembly: Assembly) -> PPOUpdateRule:
     )
 
 
-def acted(assembly: Assembly, params) -> PPOTrajectory:
+def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
     """A Trajectory acted under ``params`` and read back to the host, which is how an Actor ships one.
 
     Host-resident on purpose: ``ArrayTree`` is numpy, and the ratio being exactly one below depends
     on these log-probabilities being the ones the policy actually acted under.
     """
     key = jax.random.key(1)
-    observation = jax.random.normal(key, (BATCH, SLOTS, OBS))
-    distribution, value = assembly.apply(params, observation)
+    observation = space.observation(jax.random.normal(key, (BATCH, SLOTS, OBS)))
+    distribution, value = network.apply(params, observation)
     action = distribution.sample(seed=key)
 
     terminated, truncated = np.zeros((BATCH, SLOTS), bool), np.zeros((BATCH, SLOTS), bool)
@@ -100,7 +112,7 @@ def acted(assembly: Assembly, params) -> PPOTrajectory:
     reward = jax.random.normal(jax.random.key(2), (BATCH, SLOTS))
     return PPOTrajectory(
         transitions=PPOTransition(
-            observation=np.asarray(observation),
+            observation=jax.tree.map(np.asarray, observation),
             terminated=terminated,
             truncated=truncated,
             reward=np.asarray(reward),
@@ -119,30 +131,30 @@ def space(request: pytest.FixtureRequest) -> Space:
 
 
 @pytest.fixture(scope="module")
-def assembly(space: Space) -> Assembly:
-    return Assembly(space.head())
+def network(space: Space) -> nn.Module:
+    return make_network(space.observation_space, space.action_space)
 
 
 @pytest.fixture(scope="module")
-def params(assembly: Assembly):
-    return assembly.init(jax.random.key(0), jnp.zeros((1, OBS)))
+def params(space: Space, network: nn.Module):
+    return network.init(jax.random.key(0), space.observation(jnp.zeros((1, OBS))))
 
 
 @pytest.fixture(scope="module")
-def apply_fn(assembly: Assembly) -> PPOApply:
+def apply_fn(network: nn.Module) -> PPOApply:
     """Flax's ``apply`` returns its mutated variables too when asked, so its type admits a tuple this
     seam never wants. Narrowed here; real wiring will need the same."""
-    return cast(PPOApply, assembly.apply)
+    return cast(PPOApply, network.apply)
 
 
 @pytest.fixture(scope="module")
-def rule(assembly: Assembly) -> PPOUpdateRule:
-    return rule_over(assembly)
+def rule(network: nn.Module) -> PPOUpdateRule:
+    return rule_over(network)
 
 
 @pytest.fixture
-def trajectory(assembly: Assembly, params) -> PPOTrajectory:
-    return acted(assembly, params)
+def trajectory(space: Space, network: nn.Module, params) -> PPOTrajectory:
+    return acted(space, network, params)
 
 
 @pytest.fixture
@@ -230,12 +242,17 @@ def test_repeated_updates_descend(rule: PPOUpdateRule, state, trajectory) -> Non
     assert last < first
 
 
-def test_a_fresh_discrete_policy_is_near_uniform() -> None:
-    """Entropy is read off the distribution rather than recomputed, so it starts at log(actions),
-    which is the whole of a uniform policy's and so reads as one against it."""
-    _, metrics = fresh_loss(SPACES["discrete"])
+@pytest.mark.parametrize(
+    ("name", "legal"),
+    [pytest.param("discrete", ACTIONS, id="discrete"), pytest.param("masked", ACTIONS - 1, id="masked")],
+)
+def test_a_fresh_discrete_policy_is_near_uniform_over_the_actions_left_to_it(name: str, legal: int) -> None:
+    """Entropy is read off the distribution rather than recomputed, so it starts at the log of how
+    many actions are legal — the whole of a uniform policy's, and so one against it. Masking an
+    action lowers the first of those and the second not at all, which is the point of normalising."""
+    _, metrics = fresh_loss(SPACES[name])
 
-    assert np.isclose(metrics["entropy"], np.log(ACTIONS), atol=1e-2)
+    assert np.isclose(metrics["entropy"], np.log(legal), atol=1e-2)
     assert np.isclose(metrics["normalised_entropy"], 1.0, atol=1e-2)
 
 
@@ -304,16 +321,14 @@ def test_shuffling_loses_no_step_and_duplicates_none(rule: PPOUpdateRule, trajec
 
     minibatches = rule.shuffle_and_minibatch(jax.random.key(4), batch)
 
-    observation = jax.tree.leaves(minibatches.transitions.observation)[0]
     minibatch_size = BATCH * ROLLOUT // MINIBATCHES
 
     assert minibatches.advantages.shape == (MINIBATCHES, minibatch_size)
-    assert observation.shape == (MINIBATCHES, minibatch_size, OBS)
-    # A continuous action's own axis is trailing context like an observation's, not a step to cut on.
-    assert minibatches.transitions.action.shape == (
-        MINIBATCHES,
-        minibatch_size,
-        *trajectory.transitions.action.shape[2:],
+    # Whatever a leaf carries of its own — a continuous action's axis, a mask's, an observation's —
+    # is trailing context rather than a step to cut on, so only the two leading axes are the cut.
+    assert all(
+        cut.shape == (MINIBATCHES, minibatch_size, *whole.shape[2:])
+        for cut, whole in zip(jax.tree.leaves(minibatches.transitions), jax.tree.leaves(trajectory.transitions))
     )
     assert sorted(np.asarray(minibatches.advantages).ravel().tolist()) == list(range(BATCH * ROLLOUT))
 
@@ -365,19 +380,26 @@ def test_the_rule_is_hashable_so_it_can_be_a_static_jit_argument(rule: PPOUpdate
     assert hash(rule) == hash(rule)
 
 
-@pytest.mark.parametrize(
-    ("action_space", "head"),
-    [
-        pytest.param(gym.spaces.Discrete(ACTIONS), DiscreteHead, id="discrete"),
-        pytest.param(gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), ContinuousHead, id="continuous"),
-    ],
-)
-def test_the_head_follows_the_action_space(action_space: gym.Space, head: type[nn.Module]) -> None:
-    """The whole of what an Assembly reads off a space, and the only place PPO branches on one."""
-    chosen = policy_head(action_space)
+HEADS = {"discrete": DiscreteHead, "masked": MaskedDiscreteHead, "continuous": ContinuousHead}
 
-    assert isinstance(chosen, head)
-    assert chosen.num_actions == ACTIONS
+
+@pytest.mark.parametrize(("name", "space"), list(SPACES.items()), ids=list(SPACES))
+def test_the_head_follows_the_spaces(name: str, space: Space) -> None:
+    """The whole of what an Assembly reads off an environment, and the only place PPO branches on it.
+
+    The action space picks a Head; whether the observation carries a mask picks between the two
+    discrete ones, so an env that masks nothing never pays for a mask.
+    """
+    head = make_network(space.observation_space, space.action_space).policy
+
+    assert type(head) is HEADS[name]
+    assert head.num_actions == ACTIONS
+
+
+def test_one_assembly_serves_every_environment(space: Space) -> None:
+    """A masked observation is the Head's business and nothing else's, so an env that has a mask and
+    an env that has none are one network apart from which Head it holds."""
+    assert type(make_network(space.observation_space, space.action_space)) is PPONetwork
 
 
 @pytest.mark.parametrize(
@@ -390,7 +412,7 @@ def test_the_head_follows_the_action_space(action_space: gym.Space, head: type[n
 def test_an_action_space_with_no_head_is_refused_where_the_network_is_built(action_space: gym.Space) -> None:
     """Rather than at the first act, where the same mismatch is a shape error three layers down."""
     with pytest.raises(ValueError):
-        policy_head(action_space)
+        make_network(gym.spaces.Box(-1.0, 1.0, (OBS,)), action_space)
 
 
 @pytest.mark.parametrize(
@@ -408,14 +430,23 @@ def test_a_trajectory_slot_takes_the_action_space_s_own_shape(action_space: gym.
     assert slots[TRANSITIONS].action.dtype == action_space.dtype
 
 
+def test_a_mask_needs_no_slot_of_its_own() -> None:
+    """It rides in the observation, so the Trajectory that carries one is the Trajectory that
+    already carries the other — no Transition field, no accumulator change, no Roller change."""
+    slots = example(ROLLOUT, BATCH, SPACES["masked"].observation_space, SPACES["masked"].action_space)
+
+    assert slots[TRANSITIONS].observation[ACTION_MASK].shape == (SLOTS, BATCH, ACTIONS)
+    assert slots[TRANSITIONS].observation[OBSERVATION].shape == (SLOTS, BATCH, OBS)
+
+
 def fresh_loss(space: Space) -> tuple[jax.Array, dict]:
     """One loss taken at initialisation, over an Assembly built for ``space`` alone rather than from
-    the fixtures: what a fresh policy's entropy reads is the one thing the two spaces do not share.
+    the fixtures: what a fresh policy's entropy reads is the one thing the two do not share.
     """
-    assembly = Assembly(space.head())
-    params = assembly.init(jax.random.key(0), jnp.zeros((1, OBS)))
-    rule = rule_over(assembly)
-    return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(assembly, params))))
+    network = make_network(space.observation_space, space.action_space)
+    params = network.init(jax.random.key(0), space.observation(jnp.zeros((1, OBS))))
+    rule = rule_over(network)
+    return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(space, network, params))))
 
 
 def from_trajectory(rule: PPOUpdateRule, trajectory: PPOTrajectory):

@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
+from functools import partial
+from typing import Any, cast
 
 import chex
 import distrax
@@ -11,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from echo import TrajectoryAccumulator
+from gymnasium.wrappers.vector import NormalizeReward
 from jax import tree
 
 from brrrl.acting.env_stepper import GymVectorStepper
@@ -21,12 +23,13 @@ from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyOutput, PPOTrajectory,
 from brrrl.metrics import default_local_logger
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.metrics.wandb import WandbLogger
-from brrrl.networks.distribution import uniform_entropy
-from brrrl.networks.head import ContinuousHead, DiscreteHead, ValueHead
+from brrrl.networks.distribution import normalised_entropy
+from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Array, ArrayTree, Metrics, Params, PRNGKey, VersionedParams
 from brrrl.utils.jax import tree_swapaxes
+from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 
 EPS = 1e-8
 
@@ -170,7 +173,7 @@ class PPOUpdateRule:
             "policy_loss": policy_loss,
             "value_loss": value_loss,
             "entropy": entropy,
-            "normalised_entropy": entropy / uniform_entropy(distribution),
+            "normalised_entropy": jnp.mean(normalised_entropy(distribution), where=mask),
             "approx_kl": jnp.mean(ratio - 1 - jnp.log(ratio), where=mask),
             "clip_fraction": jnp.mean(jnp.abs(ratio - 1) > self.policy_clip_eps, where=mask),
             "value_clip_fraction": jnp.mean(jnp.abs(drift) > self.value_clip_eps, where=mask),
@@ -178,15 +181,30 @@ class PPOUpdateRule:
         return total, metrics
 
 
-def policy_head(space: gym.Space) -> nn.Module:
-    """The Head an action space asks for, and the one place PPO's Assembly turns on which space it has."""
-    match space:
+class PPONetwork(nn.Module):
+    policy: nn.Module
+
+    def setup(self):
+        self.torso = MLPTorso([64, 64], activation=jax.nn.relu, normalisation=nn.RMSNorm)
+        self.value = ValueHead()
+
+    def __call__(self, obs: Any) -> tuple[distrax.Distribution, jax.Array]:
+        masked = isinstance(self.policy, MaskedDiscreteHead)
+        emb = self.torso(obs[OBSERVATION] if masked else obs)
+        return (self.policy(emb, obs[ACTION_MASK]) if masked else self.policy(emb)), self.value(emb)
+
+
+def make_network(obs_space: gym.Space, act_space: gym.Space) -> PPONetwork:
+    is_masked = isinstance(obs_space, gym.spaces.Dict) and ACTION_MASK in obs_space.spaces
+    match act_space:
+        case gym.spaces.Discrete() if is_masked:
+            return PPONetwork(MaskedDiscreteHead(int(act_space.n)))
         case gym.spaces.Discrete():
-            return DiscreteHead(int(space.n))
+            return PPONetwork(DiscreteHead(int(act_space.n)))
         case gym.spaces.Box(shape=(num_actions,)):
-            return ContinuousHead(num_actions)
+            return PPONetwork(ContinuousHead(num_actions))
         case _:
-            raise ValueError(f"{space} is neither discrete nor a one-dimensional Box, which is all PPO has a Head for.")
+            raise ValueError(f"{act_space} must be discrete or a one-dimensional Box")
 
 
 def rescaled(env: gym.Env) -> gym.Env:
@@ -198,20 +216,6 @@ def rescaled(env: gym.Env) -> gym.Env:
 
 def main() -> None:
     """Train on a single box."""
-
-    class PPONetwork(nn.Module):
-        policy: nn.Module
-
-        def setup(self):
-            self.torso = MLPTorso([64, 64], activation=jax.nn.relu, normalisation=nn.RMSNorm)
-            self.value = ValueHead()
-
-        def __call__(self, obs: jax.Array) -> tuple[distrax.Distribution, jax.Array]:
-            emb = self.torso(obs)
-            distr = self.policy(emb)
-            value = self.value(emb)
-            return distr, value
-
     rollout_len = 128
     num_updates = 5000
     num_envs = 8
@@ -221,13 +225,14 @@ def main() -> None:
     key = jax.random.key(1)
     weights_key, policy_key, update_key = jax.random.split(key, 3)
 
+    # if the env has an action mask then wrap in brrrl.wrappers.action_mask.ActionMask
     make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
-    stepper = GymVectorStepper(make_env, num_envs, normalise_reward=True, reward_discount=gamma)
+    stepper = GymVectorStepper(make_env, num_envs, wrap=partial(NormalizeReward, gamma=gamma))
     example_transition = example(rollout_len, stepper.num_envs, env.observation_space, env.action_space)
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
-    network = PPONetwork(policy_head(env.action_space))
+    network = make_network(env.observation_space, env.action_space)
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
     param_source = InMemoryParamStore(VersionedParams(params, 0))

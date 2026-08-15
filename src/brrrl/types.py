@@ -12,11 +12,8 @@ type Version = int
 type Metrics = Mapping[str, ArrayLike]
 type NestedMetrics = Mapping[str, Any]
 type ArrayTree = NDArray | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
+type StepResult[Obs] = tuple[Obs, NDArray[np.floating], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]
 type Array = NDArray | jax.Array
-"""A leaf with two residencies: a policy output is built on the device and read back on the host.
-
-That a Roller only ever sees the host one is enforced by `Policy.act`, not by this alias.
-"""
 
 
 TRANSITIONS = "transitions"
