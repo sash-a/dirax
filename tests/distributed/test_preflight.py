@@ -23,6 +23,13 @@ Nothing races it: the claims below name a resource no node has, so the wait is s
 either way and only its length is ours to pick.
 """
 
+RAY_TIMEOUT = 30
+"""How long to wait on an actor that has been placed and should reply at once.
+
+Generous enough to cover a cold worker importing brrrl, and there only so that an actor which
+never started fails the run instead of hanging it — a bare ``ray.get`` waits forever.
+"""
+
 
 @pytest.fixture(scope="module")
 def cluster() -> Iterator[None]:
@@ -91,7 +98,7 @@ def test_a_labelled_claim_places_its_gang_members_inside_the_reservation(cluster
     member = claim.apply(Probe, group, index=1).remote()
 
     preflight([Placed("gang", claim, group), Placed("member", claim, member)], timeout=60)
-    assigned, _ = ray.get(member.report.remote())
+    assigned, _ = ray.get(member.report.remote(), timeout=RAY_TIMEOUT)
     remove_placement_group(group)
 
     assert assigned == {"CPU": 1.0}
@@ -103,7 +110,7 @@ def test_a_placed_component_gets_the_resources_and_environment_its_claim_implies
     claim = Placement(num_cpus=1)
     probe = claim.apply(Probe).remote()
 
-    assigned, environment = ray.get(probe.report.remote())
+    assigned, environment = ray.get(probe.report.remote(), timeout=RAY_TIMEOUT)
 
     assert assigned == {"CPU": 1.0}
     assert environment["JAX_PLATFORMS"] == "cpu"
@@ -114,7 +121,7 @@ def test_job_wide_environment_variables_survive_the_ones_brrrl_derives(cluster: 
     must not silently drop what the caller set on their own ``ray.init``."""
     probe = Placement(num_cpus=1).apply(Probe).remote()
 
-    _, environment = ray.get(probe.report.remote())
+    _, environment = ray.get(probe.report.remote(), timeout=RAY_TIMEOUT)
 
     assert environment["BRRRL_JOB_WIDE"] == "kept"
     assert environment["JAX_PLATFORMS"] == "cpu"

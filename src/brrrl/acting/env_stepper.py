@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, Protocol
 
 import gymnasium as gym
@@ -68,7 +68,7 @@ class GymStepper[Obs, Act]:
         observation, reward, terminated, truncated, info = self.env.step(np.asarray(action)[0])
         return (
             self.batched(observation),
-            np.array([reward], np.float64),
+            np.array([reward]),
             np.array([terminated]),
             np.array([truncated]),
             widened(info),
@@ -85,20 +85,20 @@ class GymStepper[Obs, Act]:
 
 
 class GymVectorStepper[Obs, Act]:
-    """A gymnasium vector env presented as an `EnvStepper`, batching every act call across its envs.
+    """``num_envs`` copies of one `gym.Env` presented as an `EnvStepper`, batching every act call.
 
-    Gymnasium owns the autoreset here, so this one asserts the mode rather than implementing it.
+    It vectorises what it is handed rather than taking an already-vectorised env, so the autoreset
+    mode the Trajectory layout rests on is this class's decision and not a caller's (ADR-0001).
+    That is why the constructor takes a factory: `num_envs` distinct envs cannot be made from one
+    instance.
     """
 
-    def __init__(self, env: gym.vector.VectorEnv) -> None:
-        mode = env.metadata.get("autoreset_mode")
-        if mode is not AutoresetMode.NEXT_STEP:
-            raise ValueError(
-                f"autoreset mode is {mode}, and the Trajectory layout is only valid under "
-                f"{AutoresetMode.NEXT_STEP}: any other mode puts an observation in a slot whose "
-                f"flags describe a different episode. See ADR-0001."
-            )
-        self.env = gym.wrappers.vector.RecordEpisodeStatistics(env)
+    def __init__(self, make_env: Callable[[], gym.Env], num_envs: int) -> None:
+        if num_envs < 1:
+            raise ValueError(f"num_envs is {num_envs}, and a stepper with no environments steps nothing.")
+        self.env = gym.wrappers.vector.RecordEpisodeStatistics(
+            gym.vector.SyncVectorEnv([vectorisable(make_env)] * num_envs, autoreset_mode=AutoresetMode.NEXT_STEP)
+        )
 
     @property
     def num_envs(self) -> int:
@@ -116,6 +116,29 @@ def applied(env: gym.Env) -> Iterator[type[gym.Wrapper]]:
     while isinstance(env, gym.Wrapper):
         yield type(env)
         env = env.env
+
+
+def vectorisable(make_env: Callable[[], gym.Env]) -> Callable[[], gym.Env]:
+    """``make_env``, refusing anything a vector stepper would end up wrapping twice.
+
+    The vector env owns autoreset and the statistics wrapper across all of its envs, so a per-env
+    copy of either is the same double-wrap `GymStepper` refuses, one level down.
+    """
+
+    def build() -> gym.Env:
+        env = make_env()
+        if isinstance(env, gym.vector.VectorEnv):
+            raise TypeError(
+                f"{type(env).__name__} is already vectorised, and ``GymVectorStepper`` vectorises what it "
+                "is given. Pass a factory for one env and the count you want."
+            )
+        if owned := [wrapper.__name__ for wrapper in applied(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
+            raise ValueError(
+                f"{owned} already wraps this env, and a stepper applies that itself. Pass the env without it."
+            )
+        return env
+
+    return build
 
 
 def widened(info: dict[str, Any]) -> dict[str, Any]:

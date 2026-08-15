@@ -9,42 +9,53 @@ the failure the check exists to turn into a refusal.
 import gymnasium as gym
 import numpy as np
 import pytest
-from gymnasium.vector import AutoresetMode, VectorEnv
+from gymnasium.vector import AutoresetMode
 
 from brrrl.acting.env_stepper import GymStepper, GymVectorStepper
 
 NUM_ENVS = 2
 
 
-def cartpoles(**kwargs: object) -> VectorEnv:
-    return gym.make_vec("CartPole-v1", num_envs=NUM_ENVS, vectorization_mode="sync", vector_kwargs=kwargs)
+def cartpole() -> gym.Env:
+    return gym.make("CartPole-v1")
 
 
-def test_a_next_step_environment_is_accepted_and_reports_its_env_count() -> None:
+def cartpoles() -> gym.vector.VectorEnv:
+    """The factory a caller reaches for out of habit, which the stepper has to refuse."""
+    return gym.make_vec("CartPole-v1", num_envs=NUM_ENVS)
+
+
+def test_a_factory_is_vectorised_to_the_count_it_was_given() -> None:
     """``num_envs`` is the second factor in a Roller's transition count, so only the stepper has it."""
-    stepper = GymVectorStepper(cartpoles())
+    stepper = GymVectorStepper(cartpole, NUM_ENVS)
 
     assert stepper.num_envs == NUM_ENVS
 
 
-def test_a_same_step_environment_is_refused_at_construction() -> None:
-    """Not at the first step, and not by training slightly worse: at the moment it is built."""
-    with pytest.raises(ValueError, match="SAME_STEP"):
-        GymVectorStepper(cartpoles(autoreset_mode=AutoresetMode.SAME_STEP))
+def test_the_stepper_picks_next_step_autoreset_rather_than_checking_for_it() -> None:
+    """The mode a caller used to be able to get wrong is now the stepper's own, so the refusal that
+    used to guard it has become an invariant instead."""
+    stepper = GymVectorStepper(cartpole, NUM_ENVS)
+
+    assert stepper.env.metadata["autoreset_mode"] is AutoresetMode.NEXT_STEP
 
 
-def test_an_environment_that_declares_no_autoreset_mode_is_refused_too() -> None:
-    """Gymnasium's own statistics wrapper *assumes* next-step here and warns. A layout that is
-    wrong in a way that still trains cannot rest on an assumption, so an undeclared mode is
-    refused rather than hoped about."""
-    with pytest.raises(ValueError, match="autoreset"):
-        GymVectorStepper(gym.vector.VectorEnv())
+def test_an_already_vectorised_env_is_refused_at_construction() -> None:
+    """It is handed what to vectorise. Something already vectorised carries an autoreset mode this
+    class no longer inspects, which is exactly the assumption ADR-0001 refuses to rest on."""
+    with pytest.raises(TypeError, match="already vectorised"):
+        GymVectorStepper(cartpoles, NUM_ENVS)  # ty: ignore[invalid-argument-type]
+
+
+def test_an_env_with_no_environments_is_refused() -> None:
+    with pytest.raises(ValueError, match="num_envs"):
+        GymVectorStepper(cartpole, 0)
 
 
 def test_a_single_environment_is_an_ordinary_vectorised_one() -> None:
     """Debugging one env exercises the same code path as a hundred, and the vector statistics
     schema needs no hand-synthesising."""
-    stepper = GymVectorStepper(gym.make_vec("CartPole-v1", num_envs=1, vectorization_mode="sync"))
+    stepper = GymVectorStepper(cartpole, 1)
 
     observation, _ = stepper.reset()
 
@@ -58,6 +69,13 @@ def test_an_env_that_already_carries_a_stepper_owned_wrapper_is_refused(wrapper:
     a second statistics wrapper reports the wrong episode, and neither of them says so."""
     with pytest.raises(ValueError, match=wrapper.__name__):
         GymStepper(wrapper(gym.make("CartPole-v1")))
+
+
+@pytest.mark.parametrize("wrapper", [gym.wrappers.Autoreset, gym.wrappers.RecordEpisodeStatistics])
+def test_the_vector_stepper_refuses_an_owned_wrapper_one_level_down(wrapper: type[gym.Wrapper]) -> None:
+    """The vector env owns both across all of its envs, so a per-env copy is the same double-wrap."""
+    with pytest.raises(ValueError, match=wrapper.__name__):
+        GymVectorStepper(lambda: wrapper(gym.make("CartPole-v1")), NUM_ENVS)
 
 
 def test_a_single_env_stepper_puts_an_env_axis_on_every_field() -> None:

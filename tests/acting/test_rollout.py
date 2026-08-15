@@ -20,7 +20,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from echo import TrajectoryAccumulator
-from gymnasium.vector import SyncVectorEnv
 from numpy.typing import ArrayLike, NDArray
 
 from brrrl.acting.env_stepper import EnvStepper, GymStepper, GymVectorStepper
@@ -118,7 +117,9 @@ def example(num_steps: int, num_envs: int) -> dict[str, Any]:
 
 
 def counters() -> GymVectorStepper[NDArray, ArrayLike]:
-    return GymVectorStepper(SyncVectorEnv([lambda length=length: Counter(length) for length in LENGTHS]))
+    """The stepper calls the factory once per env, so the lengths come off an iterator in order."""
+    lengths = iter(LENGTHS)
+    return GymVectorStepper(lambda: Counter(next(lengths)), len(LENGTHS))
 
 
 @dataclass
@@ -274,7 +275,7 @@ def test_one_env_behind_either_stepper_produces_the_same_trajectory() -> None:
     gymnasium's own vector autoreset is the oracle it is held to — the same oracle the layout was
     settled against. A hand-rolled reset that fired a step early would diverge here."""
     single, _ = build(stepper=GymStepper(Counter(LENGTHS[0]))).rollout()
-    vector, _ = build(stepper=GymVectorStepper(SyncVectorEnv([lambda: Counter(LENGTHS[0])]))).rollout()
+    vector, _ = build(stepper=GymVectorStepper(lambda: Counter(LENGTHS[0]), 1)).rollout()
 
     for one, many in zip(single.transitions, vector.transitions, strict=True):
         np.testing.assert_array_equal(one, many)
@@ -284,7 +285,7 @@ def test_one_env_behind_either_stepper_reports_the_same_episodes() -> None:
     """A sub-env behind the single-env statistics wrapper never receives the ignored step, so its
     statistics need no previous-dones bookkeeping to agree with the vector wrapper's."""
     _, single = build(stepper=GymStepper(Counter(LENGTHS[0]))).rollout()
-    _, vector = build(stepper=GymVectorStepper(SyncVectorEnv([lambda: Counter(LENGTHS[0])]))).rollout()
+    _, vector = build(stepper=GymVectorStepper(lambda: Counter(LENGTHS[0]), 1)).rollout()
 
     assert single.keys() == vector.keys()
     assert np.asarray(single["episode_return"]).tolist() == np.asarray(vector["episode_return"]).tolist()
