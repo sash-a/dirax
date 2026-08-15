@@ -32,6 +32,8 @@ from brrrl.utils.jax import tree_swapaxes
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 
 EPS = 1e-8
+MAX_GRAD_NORM = 0.5
+ADAM_EPS = 1e-5
 
 type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 type EpochCarry = tuple[PPOUpdateState, PPOBatch]
@@ -56,7 +58,7 @@ class PPOUpdateRule:
     batch_size: int
     rollout_length: int
     num_epochs: int = 2
-    num_minibatches: int = 8
+    num_minibatches: int = 4
     policy_clip_eps: float = 0.2
     value_clip_eps: float = 0.2
     ent_coef: float = 0.01
@@ -185,7 +187,7 @@ class PPONetwork(nn.Module):
     policy: nn.Module
 
     def setup(self):
-        self.torso = MLPTorso([64, 64], activation=jax.nn.relu, normalisation=nn.RMSNorm)
+        self.torso = MLPTorso([64, 64], activation=jax.nn.relu)
         self.value = ValueHead()
 
     def __call__(self, obs: Any) -> tuple[distrax.Distribution, jax.Array]:
@@ -217,9 +219,12 @@ def rescaled(env: gym.Env) -> gym.Env:
 def main() -> None:
     """Train on a single box."""
     rollout_len = 128
-    num_updates = 5000
     num_envs = 8
+    num_updates = 5000
+    num_epochs = 2
+    num_minibatches = 4
     gamma = 0.99
+    learning_rate = 3e-4
     env_name = "Acrobot-v1"
 
     key = jax.random.key(1)
@@ -236,7 +241,9 @@ def main() -> None:
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
     param_source = InMemoryParamStore(VersionedParams(params, 0))
-    opt = optax.adam(3e-4)
+    # Annealed to zero across the run
+    schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
+    opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
     opt_state = opt.init(params)
 
     def actor_forward(params, observations, key):
@@ -252,7 +259,7 @@ def main() -> None:
 
     policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
     roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len)
-    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, gamma=gamma)
+    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
