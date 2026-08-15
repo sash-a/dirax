@@ -1,7 +1,7 @@
 """The estimator's contract, asserted against rlax as an oracle.
 
 rlax expresses an episode boundary as one ``discount_t``, while we keep terminated and truncated
-apart and carry a Final obs slot (ADR-0001, ADR-0012). The translation between the two conventions
+apart and carry a Final obs slot (ADR-0001). The translation between the two conventions
 is written out in ``rlax_advantages`` below. Getting it wrong does not crash — it trains, just
 worse — which is why rlax stays a dev dependency and this file exists.
 

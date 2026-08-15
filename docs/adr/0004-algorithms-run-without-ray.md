@@ -1,7 +1,7 @@
 # Algorithm files run without Ray
 
-Each file in `algorithms/` carries a `main()` that trains in one process on one
-thread, and imports nothing from `distributed/`. `python -m brrrl.algorithms.ppo`
+Each file in `algorithms/` carries a `main()` that trains on a single box,
+and imports nothing from `distributed/`. `python -m brrrl.algorithms.ppo`
 must train CartPole with no Ray anywhere in its transitive imports.
 
 This turns the layering from a convention into a CI check: if an algorithm can
@@ -13,13 +13,8 @@ cluster.
 
 `main()` writes its own sequential loop rather than reusing the `Actor` and
 `Trainer` components, whose loops genuinely differ — they block on queues, batch
-across actors, and handle staleness. Roughly eight lines of orchestration exist
-in both places.
+across actors, and handle staleness.
 
 That duplication is deliberate. `main()` is an executable spec of the algorithm
 API. Parity between the two paths is a test — both must learn CartPole — not
 something bought with shared code.
-
-The eight-line constraint this ADR originally placed on the training loop is
-superseded by ADR-0009, which constrains what the loop may contain rather than
-how long it may be.

@@ -1,7 +1,7 @@
 """Estimators: a Trajectory's rewards and values to the advantages and targets an Objective reads.
 
 The boundary translation ADR-0010 mandates lives here and nowhere else. Slots are T+1 and
-time-major, and every derived signal reads the flags at a shift of zero per ADR-0012.
+time-major, and every derived signal reads the flags at a shift of zero per ADR-0001.
 """
 
 from functools import partial

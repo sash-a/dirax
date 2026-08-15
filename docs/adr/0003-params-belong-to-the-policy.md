@@ -17,8 +17,7 @@ any Roller, which is the property the whole acting layer is built around.
 
 A Policy is stateful, so it **cannot live inside a jitted rollout**. Fully
 jitted rollers will be a separate family built on pure functions with explicit
-params, not an implementation of this protocol. That is a fork in the design,
-not a gap to be patched later.
+params, not an implementation of this protocol. If they are built at all.
 
 Because params are hidden, the Roller needs the version it acted under. So `act`
 reports it beside the action, and nothing outside a Policy ever asks it to align:

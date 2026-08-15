@@ -3,20 +3,15 @@
 Gymnasium offers two autoreset modes. We use `NEXT_STEP` (its default) rather
 than `SAME_STEP`, because `SAME_STEP` returns an observation belonging to a
 *different episode* than the reward and terminal flag beside it, with the true
-terminal observation buried in a ragged info dict — a transition that looks
-valid and isn't.
+terminal observation buried in a ragged info dict.
 
 ## Consequences
 
-`NEXT_STEP` costs one Trajectory slot per episode per env: the step whose action
-the env ignores and whose reward it zeroes. That slot needs masking, but no
-`mask` field. Because a Transition carries the flags describing its own
-observation, `terminated | truncated` on the **same slot** already says so.
+`NEXT_STEP` costs one extra transition slot in the buffer per rollout.
+That slot needs masking, use `terminated | truncated`.
 
-That slot holds the **Final obs**, and it is real. Truncation bootstrapping reads
-its value from there; only a termination reads nothing from it. Don't "optimise"
-the slot away.
+That extra transition is the final obs and used to bootstrap if truncated, or ignored if terminal.
 
-The new episode's first observation lands one slot further on, so a recurrent
-carry resets on `terminated | truncated` at `t-1` — one shift later than the
-mask, and the only shift the layout has.
+A Trajectory is therefore T+1 slots aligned as **observation_t, terminated_t, truncated_t,
+reward_{t+1}, action_{t+1}, value_{t+1}, log_prob_{t+1}**. So the flags describe
+the observation beside them, not the outcome of the action beside them.
