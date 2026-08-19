@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
-from brrrl.wrappers.widening import EPISODE_MASK, EPISODE_STATS, Widened
+from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS
+from brrrl.wrappers.looped import Looped
 
 CARTPOLE_OBS = 4
 TAXI_ACTIONS = 6
@@ -21,13 +22,13 @@ def cartpole() -> gym.Env:
     return gym.make("CartPole-v1")
 
 
-def widened() -> Widened:
-    return Widened(gym.wrappers.RecordEpisodeStatistics(cartpole()))
+def looped() -> Looped:
+    return Looped([gym.wrappers.RecordEpisodeStatistics(cartpole())])
 
 
 def test_every_field_leads_with_an_env_axis() -> None:
     """The one API a Roller steps, whatever built the environments."""
-    env = widened()
+    env = looped()
 
     observation, _ = env.reset()
     stepped, reward, terminated, truncated, _ = env.step(np.zeros(1, int))
@@ -38,7 +39,7 @@ def test_every_field_leads_with_an_env_axis() -> None:
 
 def test_the_spaces_say_so_too() -> None:
     """A caller sizing a buffer off the space gets the shape the steps actually arrive in."""
-    env = widened()
+    env = looped()
 
     assert env.observation_space.shape == (1, CARTPOLE_OBS)
     assert env.action_space.shape == (1,)
@@ -47,7 +48,7 @@ def test_the_spaces_say_so_too() -> None:
 def test_an_observation_is_a_fresh_array_each_step() -> None:
     """A Roller carries an observation across a step, so a buffer reused between steps would rewrite
     the slot it already recorded — with the *next* state, under the flags of this one."""
-    env = widened()
+    env = looped()
 
     first, _ = env.reset()
     kept = first.copy()
@@ -59,7 +60,7 @@ def test_an_observation_is_a_fresh_array_each_step() -> None:
 
 def test_the_action_is_unwrapped_on_the_way_in() -> None:
     """It arrives with the env axis every other field carries, and a `gym.Env` takes none."""
-    env = widened()
+    env = looped()
     env.reset()
 
     left, _, _, _, _ = env.step(np.zeros(1, int))
@@ -71,7 +72,7 @@ def test_the_action_is_unwrapped_on_the_way_in() -> None:
 def test_a_finished_episode_is_reported_in_the_vector_schema() -> None:
     """Full-width statistics under ``episode``, and the mask naming which envs they belong to. A
     Roller's episode reader knows that schema and nothing else, so one env has to speak it."""
-    env = Widened(gym.wrappers.Autoreset(gym.wrappers.RecordEpisodeStatistics(cartpole())))
+    env = Looped([gym.wrappers.Autoreset(gym.wrappers.RecordEpisodeStatistics(cartpole()))])
     env.reset()
 
     infos = [info for _ in range(600) if EPISODE_STATS in (info := env.step(np.zeros(1, int))[4])]
@@ -84,7 +85,7 @@ def test_a_finished_episode_is_reported_in_the_vector_schema() -> None:
 def test_an_info_without_statistics_passes_through_untouched() -> None:
     """Most steps finish no episode, and inventing a zero for those would report an episode that
     never happened."""
-    env = widened()
+    env = looped()
 
     _, info = env.reset()
 
@@ -94,9 +95,10 @@ def test_an_info_without_statistics_passes_through_untouched() -> None:
 def test_a_dict_observation_widens_leaf_by_leaf() -> None:
     """Which is what lets an action mask ride in the observation and need nothing else changed.
 
-    Taxi rather than a stand-in, because this is the composition a masked run actually builds.
+    Taxi rather than a stand-in, because this is the composition a masked run actually builds. It has
+    one agent, so its mask carries no agent axis and the env axis is the only one in front of it.
     """
-    env = Widened(ActionMask(gym.make("Taxi-v4")))
+    env = Looped([ActionMask(gym.make("Taxi-v4"))])
 
     observation, _ = env.reset()
 
@@ -105,10 +107,10 @@ def test_a_dict_observation_widens_leaf_by_leaf() -> None:
 
 
 @pytest.mark.parametrize("field", ["reward", "terminated", "truncated"])
-def test_a_widened_env_is_no_longer_an_ordinary_one(field: str) -> None:
+def test_a_looped_env_is_no_longer_an_ordinary_one(field: str) -> None:
     """It goes on outermost: a gymnasium wrapper above it would read an array where it expects a
     scalar reward or a bare flag, and most of them would keep going."""
-    env = widened()
+    env = looped()
     env.reset()
 
     stepped: dict[str, Any] = dict(zip(["reward", "terminated", "truncated"], env.step(np.zeros(1, int))[1:4]))

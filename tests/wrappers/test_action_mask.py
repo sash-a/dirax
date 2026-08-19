@@ -2,6 +2,11 @@
 
 The masking itself is the Head's, in ``networks/test_head.py``. What is here is only that the mask
 an env published reaches the observation, unchanged and beside the state it describes.
+
+It carries the agent axis wherever every other field does, because a Head reads its logits at that
+shape — so a team's mask is one row per agent and a single agent's is a bare vector, matching the
+env's fields either way. How wide it is comes off the action space rather than a count the caller
+repeats, which is what leaves one wrapper here rather than one per arity.
 """
 
 from typing import Any, cast
@@ -15,6 +20,7 @@ from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
 
 CARTPOLE_OBS = 4
 ACTIONS = 2
+TEAM = 3
 NUM_ENVS = 3
 FORBIDDEN = 1
 LEGAL = np.array([action != FORBIDDEN for action in range(ACTIONS)], np.int8)
@@ -44,6 +50,19 @@ class Publishing(gym.Wrapper):
     def step(self, action: Any):
         observation, reward, terminated, truncated, info = self.env.step(action)
         return observation, reward, terminated, truncated, info | {self.key: LEGAL}
+
+
+class Teamed(gym.Wrapper):
+    """``env`` reporting a whole team's actions, and its mask a row apiece."""
+
+    def __init__(self, env: gym.Env, action_space: gym.Space) -> None:
+        super().__init__(Publishing(env))
+        self.action_space = action_space
+        self.agents = len(getattr(action_space, "nvec", getattr(action_space, "spaces", ())))
+
+    def reset(self, **kwargs: Any):
+        observation, info = self.env.reset(**kwargs)
+        return observation, info | {ACTION_MASK: np.tile(LEGAL, (self.agents, 1))}
 
 
 def masked(key: str = ACTION_MASK) -> gym.Env:
@@ -124,6 +143,28 @@ def test_a_continuous_action_space_is_refused() -> None:
     hop a Trajectory makes for a value nothing ever reads."""
     with pytest.raises(TypeError, match="mask off"):
         ActionMask(gym.make("Pendulum-v1"))
+
+
+@pytest.mark.parametrize(
+    "space",
+    [gym.spaces.MultiDiscrete([ACTIONS] * TEAM), gym.spaces.Tuple([gym.spaces.Discrete(ACTIONS)] * TEAM)],
+    ids=["multi discrete", "tuple"],
+)
+def test_a_team_gets_a_row_of_legal_actions_each(space: gym.Space) -> None:
+    """However the env named the team's actions, the mask is rectangular and its rows are the axis a
+    Head already reads. Nobody tells the wrapper the count — the action space already has it."""
+    env = ActionMask(Teamed(cartpole(), space))
+
+    observation, _ = env.reset()
+
+    assert cast(gym.spaces.Dict, env.observation_space)[ACTION_MASK].shape == (TEAM, ACTIONS)
+    assert observation[ACTION_MASK].tolist() == [LEGAL.tolist()] * TEAM
+
+
+def test_agents_choosing_from_different_sets_are_refused() -> None:
+    """A ragged mask has no rectangle to be, and padding one invents legal actions that do not exist."""
+    with pytest.raises(TypeError, match="mask off"):
+        ActionMask(Teamed(cartpole(), gym.spaces.MultiDiscrete([2, 3])))
 
 
 def test_masked_envs_vectorise_into_one_batched_observation() -> None:

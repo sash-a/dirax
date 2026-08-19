@@ -27,6 +27,7 @@ import numpy as np
 import optax
 import pytest
 
+from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.ppo import PPOApply, PPONetwork, PPOUpdateRule, explained_variance, make_network, normalise
 from brrrl.algorithms.ppo.types import PPOBatch, PPOTrajectory, PPOTransition, PPOUpdateState, example
@@ -37,14 +38,24 @@ from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 BATCH, ROLLOUT, OBS, ACTIONS = 4, 8, 5, 3
 SLOTS = ROLLOUT + 1
 EPOCHS, MINIBATCHES = 2, 2
+TEAM = 3
+"""Held at one agent and at a team, because the update rule is not supposed to be able to tell them
+apart: whatever leading axes a field arrives with, nothing in the loss reads how many there are."""
 TERMINATION, TRUNCATION = (0, 6), (1, 3)
-"""(row, slot) of a Final obs of each kind, so both boundaries are exercised."""
+"""(row, slot) of a Final obs of each kind, so both boundaries are exercised. It indexes a whole
+agent row where there is one, because an episode is over when every agent is."""
 ILLEGAL = ACTIONS - 1
 """Masked off everywhere in the masked case, so every property below is held over a mask that binds."""
 
+PLAIN_SPACE = gym.spaces.Box(-1.0, 1.0, (OBS,))
+
 
 def legal_actions(shape: tuple[int, ...]) -> np.ndarray:
-    return np.ones((*shape, ACTIONS), np.int8) * np.array([action != ILLEGAL for action in range(ACTIONS)], np.int8)
+    """A row of legal actions wherever the observation had one, which is the shape a Head reads its
+    logits at. It follows the observation rather than being told a count, so a team's mask gains the
+    agent axis from the observation it rides beside and a single agent's never has one."""
+    legal = np.array([action != ILLEGAL for action in range(ACTIONS)], np.int8)
+    return np.ones((*shape, ACTIONS), np.int8) * legal
 
 
 class Space(NamedTuple):
@@ -56,24 +67,42 @@ class Space(NamedTuple):
     action_space: gym.Space
     observation: Callable[[jax.Array], Any]
     foul: Callable[[Array], Array]
+    agent_axis: tuple[int, ...]
 
 
-PLAIN_SPACE = gym.spaces.Box(-1.0, 1.0, (OBS,))
-MASKED_SPACE = gym.spaces.Dict({OBSERVATION: PLAIN_SPACE, ACTION_MASK: gym.spaces.MultiBinary(ACTIONS)})
+def spaces(num_agents: int) -> dict[str, Space]:
+    """The three environments PPO builds an Assembly for, at whatever the agent axis is.
 
-SPACES = {
-    "discrete": Space(
-        PLAIN_SPACE, gym.spaces.Discrete(ACTIONS), lambda array: array, lambda action: (action + 1) % ACTIONS
-    ),
-    "masked": Space(
-        MASKED_SPACE,
-        gym.spaces.Discrete(ACTIONS),
-        lambda array: {OBSERVATION: array, ACTION_MASK: legal_actions(array.shape[:-1])},
-        lambda action: (action + 1) % ACTIONS,
-    ),
-    "continuous": Space(
-        PLAIN_SPACE, gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), lambda array: array, lambda action: -action
-    ),
+    A team's env observes for each of its agents, so the axis is on the observation and the mask
+    alike and the network is handed it rather than producing it. A single agent's env has no agent
+    axis on anything, which is what leaves its network with nothing to say about agents (ADR-0012).
+    """
+    axis = () if num_agents == 1 else (num_agents,)
+    plain = gym.spaces.Box(-1.0, 1.0, (*axis, OBS))
+    masked = gym.spaces.Dict({OBSERVATION: plain, ACTION_MASK: gym.spaces.MultiBinary((*axis, ACTIONS))})
+    return {
+        "discrete": Space(plain, gym.spaces.Discrete(ACTIONS), lambda array: array, lambda a: (a + 1) % ACTIONS, axis),
+        "masked": Space(
+            masked,
+            gym.spaces.Discrete(ACTIONS),
+            lambda array: {OBSERVATION: array, ACTION_MASK: legal_actions(array.shape[:-1])},
+            lambda a: (a + 1) % ACTIONS,
+            axis,
+        ),
+        "continuous": Space(plain, gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), lambda array: array, lambda a: -a, axis),
+    }
+
+
+def shaped(space: Space, *leading: int) -> tuple[int, ...]:
+    """The shape one of this env's observations arrives in, under ``leading`` axes of a caller's."""
+    return (*leading, *space.agent_axis, OBS)
+
+
+SPACES = spaces(1)
+EVERY = {
+    f"{name}{'' if agents == 1 else ' as a team'}": space
+    for agents in (1, TEAM)
+    for name, space in spaces(agents).items()
 }
 
 
@@ -102,14 +131,15 @@ def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
     on these log-probabilities being the ones the policy actually acted under.
     """
     key = jax.random.key(1)
-    observation = space.observation(jax.random.normal(key, (BATCH, SLOTS, OBS)))
+    observation = space.observation(jax.random.normal(key, shaped(space, BATCH, SLOTS)))
     distribution, value = network.apply(params, observation)
     action = distribution.sample(seed=key)
 
-    terminated, truncated = np.zeros((BATCH, SLOTS), bool), np.zeros((BATCH, SLOTS), bool)
+    width = (BATCH, SLOTS, *space.agent_axis)
+    terminated, truncated = np.zeros(width, bool), np.zeros(width, bool)
     terminated[TERMINATION] = True
     truncated[TRUNCATION] = True
-    reward = jax.random.normal(jax.random.key(2), (BATCH, SLOTS))
+    reward = jax.random.normal(jax.random.key(2), width)
     return PPOTrajectory(
         transitions=PPOTransition(
             observation=jax.tree.map(np.asarray, observation),
@@ -124,9 +154,10 @@ def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
     )
 
 
-@pytest.fixture(scope="module", params=list(SPACES.values()), ids=list(SPACES))
+@pytest.fixture(scope="module", params=list(EVERY.values()), ids=list(EVERY))
 def space(request: pytest.FixtureRequest) -> Space:
-    """Both action spaces PPO has a Head for, threaded through every fixture below."""
+    """Every action space PPO has a Head for, at both widths of the agent axis, threaded through
+    every fixture below."""
     return request.param
 
 
@@ -137,7 +168,7 @@ def network(space: Space) -> nn.Module:
 
 @pytest.fixture(scope="module")
 def params(space: Space, network: nn.Module):
-    return network.init(jax.random.key(0), space.observation(jnp.zeros((1, OBS))))
+    return network.init(jax.random.key(0), space.observation(jnp.zeros(shaped(space, 1))))
 
 
 @pytest.fixture(scope="module")
@@ -375,6 +406,36 @@ def test_normalise_standardises_over_the_unmasked_slots_alone() -> None:
     assert np.isclose(jnp.std(normalised, where=mask), 1.0, atol=1e-4)
 
 
+def test_a_value_carries_whatever_axis_its_observation_did(space: Space, network, params) -> None:
+    """The network says nothing about agents and needs to: every layer in it is polymorphic over its
+    leading axes, so a team's observation comes back as a value per agent and a single agent's as one
+    value — which is the shape the loss needs either way, because it compares a value against a
+    reward slot for slot and the stepper reported both the same way."""
+    distribution, value = network.apply(params, space.observation(jnp.zeros(shaped(space, BATCH, SLOTS))))
+    action = distribution.sample(seed=jax.random.key(6))
+
+    assert value.shape == (BATCH, SLOTS, *space.agent_axis)
+    assert jnp.shape(distribution.log_prob(action)) == (BATCH, SLOTS, *space.agent_axis)
+
+
+def test_one_network_serves_both_arities_unchanged() -> None:
+    """The property the whole arrangement is for: the same `PPONetwork`, built the same way, run over
+    a single agent's observation and a team's. Nothing about it was told how many agents there are,
+    and the params are the same size either way — one network shared down the axis, not N of them."""
+    alone, team = spaces(1)["discrete"], spaces(TEAM)["discrete"]
+    network = make_network(alone.observation_space, alone.action_space)
+    apply = cast(PPOApply, network.apply)
+
+    one = network.init(jax.random.key(0), jnp.zeros(shaped(alone, BATCH)))
+    many = network.init(jax.random.key(0), jnp.zeros(shaped(team, BATCH)))
+
+    assert jax.tree.all(jax.tree.map(lambda a, b: a.shape == b.shape, one, many))
+    _, single_value = apply(one, np.zeros(shaped(alone, BATCH), np.float32))
+    _, team_value = apply(many, np.zeros(shaped(team, BATCH), np.float32))
+    assert single_value.shape == (BATCH,)
+    assert team_value.shape == (BATCH, TEAM)
+
+
 def test_the_rule_is_hashable_so_it_can_be_a_static_jit_argument(rule: PPOUpdateRule) -> None:
     """``update`` closes over ``self`` as static; an unfrozen dataclass would raise at trace time."""
     assert hash(rule) == hash(rule)
@@ -393,6 +454,14 @@ def test_the_head_follows_the_spaces(name: str, space: Space) -> None:
     head = make_network(space.observation_space, space.action_space).policy
 
     assert type(head) is HEADS[name]
+    assert head.num_actions == ACTIONS
+
+
+def test_a_head_is_built_from_one_agents_action_space() -> None:
+    """A Head emits one action per value and the agent axis is the observation's, so the team's count
+    changes how many actions come back and never how many the Head chooses between."""
+    head = make_network(spaces(TEAM)["discrete"].observation_space, gym.spaces.Discrete(ACTIONS)).policy
+
     assert head.num_actions == ACTIONS
 
 
@@ -416,27 +485,46 @@ def test_an_action_space_with_no_head_is_refused_where_the_network_is_built(acti
 
 
 @pytest.mark.parametrize(
-    ("action_space", "shape"),
+    ("action_space", "trailing"),
     [
-        pytest.param(gym.spaces.Discrete(ACTIONS), (SLOTS, BATCH), id="discrete"),
-        pytest.param(gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), (SLOTS, BATCH, ACTIONS), id="continuous"),
+        pytest.param(gym.spaces.Discrete(ACTIONS), (), id="discrete"),
+        pytest.param(gym.spaces.Box(-1.0, 1.0, (ACTIONS,)), (ACTIONS,), id="continuous"),
     ],
 )
-def test_a_trajectory_slot_takes_the_action_space_s_own_shape(action_space: gym.Space, shape: tuple[int, ...]) -> None:
-    """A slot sized for a scalar takes a continuous action's first component and drops the rest."""
-    slots = example(ROLLOUT, BATCH, gym.spaces.Box(-1.0, 1.0, (OBS,)), action_space)
+@pytest.mark.parametrize("num_agents", [1, TEAM], ids=["one agent", "a team"])
+def test_a_trajectory_slot_takes_the_action_space_s_own_shape(action_space, trailing, num_agents: int) -> None:
+    """A slot sized for a scalar takes a continuous action's first component and drops the rest. The
+    space is one agent's, so the count is spelled here rather than pushed into a space a Head reads."""
+    axis = prefix(BATCH, num_agents)
+    slots = example(ROLLOUT, axis, PLAIN_SPACE, action_space)
 
-    assert slots[TRANSITIONS].action.shape == shape
+    assert slots[TRANSITIONS].action.shape == (SLOTS, *axis, *trailing)
     assert slots[TRANSITIONS].action.dtype == action_space.dtype
 
 
-def test_a_mask_needs_no_slot_of_its_own() -> None:
+@pytest.mark.parametrize("num_agents", [1, TEAM], ids=["one agent", "a team"])
+def test_every_field_but_the_observation_leads_with_the_prefix(num_agents: int) -> None:
+    """The observation keeps whatever shape the env gave it, because no stepper touches one and the
+    Assembly is what reads it. Everything an Estimator or a mask reads leads with what the stepper
+    reported — which has an agent axis for a team and none at all for a single agent."""
+    axis = prefix(BATCH, num_agents)
+    transitions = example(ROLLOUT, axis, PLAIN_SPACE, gym.spaces.Discrete(ACTIONS))[TRANSITIONS]
+
+    width = (SLOTS, *axis)
+    assert transitions.reward.shape == transitions.value.shape == transitions.log_prob.shape == width
+    assert transitions.terminated.shape == transitions.truncated.shape == width
+    assert transitions.observation.shape == (SLOTS, BATCH, OBS)
+
+
+@pytest.mark.parametrize("num_agents", [1, TEAM], ids=["one agent", "a team"])
+def test_a_mask_needs_no_slot_of_its_own(num_agents: int) -> None:
     """It rides in the observation, so the Trajectory that carries one is the Trajectory that
     already carries the other — no Transition field, no accumulator change, no Roller change."""
-    slots = example(ROLLOUT, BATCH, SPACES["masked"].observation_space, SPACES["masked"].action_space)
+    masked = spaces(num_agents)["masked"]
+    slots = example(ROLLOUT, prefix(BATCH, num_agents), masked.observation_space, masked.action_space)
 
-    assert slots[TRANSITIONS].observation[ACTION_MASK].shape == (SLOTS, BATCH, ACTIONS)
-    assert slots[TRANSITIONS].observation[OBSERVATION].shape == (SLOTS, BATCH, OBS)
+    assert slots[TRANSITIONS].observation[ACTION_MASK].shape == (SLOTS, BATCH, *masked.agent_axis, ACTIONS)
+    assert slots[TRANSITIONS].observation[OBSERVATION].shape == (SLOTS, BATCH, *masked.agent_axis, OBS)
 
 
 def fresh_loss(space: Space) -> tuple[jax.Array, dict]:
@@ -444,7 +532,7 @@ def fresh_loss(space: Space) -> tuple[jax.Array, dict]:
     the fixtures: what a fresh policy's entropy reads is the one thing the two do not share.
     """
     network = make_network(space.observation_space, space.action_space)
-    params = network.init(jax.random.key(0), space.observation(jnp.zeros((1, OBS))))
+    params = network.init(jax.random.key(0), space.observation(jnp.zeros(shaped(space, 1))))
     rule = rule_over(network)
     return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(space, network, params))))
 

@@ -70,4 +70,4 @@ addopts = "--strict-markers --strict-config -n auto --dist loadscope"
 
 [tool.codespell]
 skip = "uv.lock,*.ipynb,.git,.venv,.ruff_cache"
-ignore-words-list = "re-use,nd,ba,meaned"
+ignore-words-list = "re-use,nd,ba,meaned,brrrl"

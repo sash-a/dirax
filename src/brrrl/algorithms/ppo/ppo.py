@@ -15,7 +15,7 @@ from echo import TrajectoryAccumulator
 from gymnasium.wrappers.vector import NormalizeReward
 from jax import tree
 
-from brrrl.acting.env_stepper import GymVectorStepper
+from brrrl.acting.env_stepper import AsyncStepper, prefix
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.estimators import generalised_advantages
@@ -30,6 +30,7 @@ from brrrl.params.params import InMemoryParamStore
 from brrrl.types import Array, ArrayTree, Metrics, Params, PRNGKey, VersionedParams
 from brrrl.utils.jax import tree_swapaxes
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
+from brrrl.wrappers.agents import one_agent
 
 EPS = 1e-8
 MAX_GRAD_NORM = 0.5
@@ -184,6 +185,15 @@ class PPOUpdateRule:
 
 
 class PPONetwork(nn.Module):
+    """Torso and Heads applied straight to whatever shape the observation arrives in.
+
+    It says nothing about agents, and that is the point. Every layer here is polymorphic over its
+    leading axes — the property that already lets acting at ``(E, ...)`` and learning at
+    ``(T, E, ...)`` call one network — so an env whose agents each observe for themselves hands this
+    an agent axis and gets one back on the action, the log-probability and the value, while an env
+    with a single agent hands it none and gets none back (ADR-0012).
+    """
+
     policy: nn.Module
 
     def setup(self):
@@ -197,6 +207,7 @@ class PPONetwork(nn.Module):
 
 
 def make_network(obs_space: gym.Space, act_space: gym.Space) -> PPONetwork:
+    """``act_space`` is one agent's. `brrrl.wrappers.agents.one_agent` of what the env declares."""
     is_masked = isinstance(obs_space, gym.spaces.Dict) and ACTION_MASK in obs_space.spaces
     match act_space:
         case gym.spaces.Discrete() if is_masked:
@@ -220,6 +231,7 @@ def main() -> None:
     """Train on a single box."""
     rollout_len = 128
     num_envs = 8
+    num_agents = 1
     num_updates = 5000
     num_epochs = 2
     num_minibatches = 4
@@ -233,11 +245,13 @@ def main() -> None:
     # if the env has an action mask then wrap in brrrl.wrappers.action_mask.ActionMask
     make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
-    stepper = GymVectorStepper(make_env, num_envs, wrap=partial(NormalizeReward, gamma=gamma))
-    example_transition = example(rollout_len, stepper.num_envs, env.observation_space, env.action_space)
+    stepper = AsyncStepper([make_env] * num_envs, num_agents, wrap=partial(NormalizeReward, gamma=gamma))
+    act_space = one_agent(env.action_space, num_agents)
+    width = prefix(stepper.num_envs, num_agents)
+    example_transition = example(rollout_len, width, env.observation_space, act_space)
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
-    network = make_network(env.observation_space, env.action_space)
+    network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
     param_source = InMemoryParamStore(VersionedParams(params, 0))

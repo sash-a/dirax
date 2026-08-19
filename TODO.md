@@ -1,20 +1,26 @@
 ## Algorithms
-- [ ] PPO
+- [x] PPO
   - [x] Implementation
   - [x] Comprehensive metrics
   - [x] Continuous
-  - [ ] Benchmarked against open RL bench
-- [ ] Agent dim to support MARL workflows + ADR
+  - [x] Benchmarked against open RL bench
+- [x] Agent dim to support MARL workflows + ADR
+- [ ] Recurrence
 - [ ] More algorithms:
   - [ ] Impala + VTrace
   - [ ] DQN/APEX/R2D2
   - [ ] SAC/TD3
   - [ ] GRPO
+  - [ ] MAPPO
 
 ## Infra
+- [ ] Capture env metrics
 - [ ] Distributed trainer
 - [ ] Distributed policy
 - [ ] Distributed stepper
-- [ ] Read through and correct ADRs/docs
+- [ ] Jumanji stepper
+- [ ] Read through and correct docs
+- [x] Read through and correct ADRs
 - [ ] Read through and validate/correct tests
 - [ ] Full tests run in distributed setup
+- [ ] brrrl benchmark repo + standard set of benchmark envs/runners

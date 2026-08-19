@@ -7,42 +7,61 @@ from numpy.typing import NDArray
 
 OBSERVATION = "observation"
 ACTION_MASK = "action_mask"
-"""The keys an observation and its legal actions are read under, once the two travel together."""
 
 type MaskFn = Callable[[dict[str, Any]], NDArray[np.bool_]]
-"""Reads the legal actions out of what an env reported beside a step."""
 
 
 def published(info: dict[str, Any]) -> NDArray[np.bool_]:
-    """The key gymnasium's own masked envs report a mask under, which is the only convention there is."""
+    """The key gymnasium's own masked envs report a mask in infos, this reads it."""
     if ACTION_MASK not in info:
-        raise KeyError(f"this env reports no {ACTION_MASK!r} beside its steps; pass a reader that knows where it does")
+        raise KeyError(f"this env reports no {ACTION_MASK!r} in infos. Either add a mask to infos or change mask_fn")
     return info[ACTION_MASK]
+
+
+def legal_shape(space: gym.Space) -> tuple[int, ...]:
+    """``(agents, actions)`` — one row of legal actions per agent, or ``(actions,)`` for one agent.
+
+    The mask carries the agent axis wherever the reward does, and for the same reason: a Head reads
+    its logits at that shape, so a mask a row short would broadcast against them rather than fail.
+    An env with a single agent has no agent axis, so neither has its mask.
+    """
+    match space:
+        case gym.spaces.Discrete(n=actions):
+            return (int(actions),)
+        case gym.spaces.MultiDiscrete(nvec=nvec) if nvec.ndim == 1 and len(np.unique(nvec)) == 1:
+            return len(nvec), int(nvec[0])
+        case gym.spaces.Tuple(spaces=spaces) if actions := alike(spaces):
+            return len(spaces), actions
+        case _:
+            raise TypeError(f"{space} has no actions to mask off, which only a discrete space has.")
+
+
+def alike(spaces: tuple[gym.Space, ...]) -> int:
+    """How many actions every agent chooses between, or none if they do not all choose alike.
+
+    A ragged mask has no rectangle to be, and padding one invents legal actions that do not exist.
+    """
+    discrete = [one for one in spaces if isinstance(one, gym.spaces.Discrete)]
+    if not discrete or len(discrete) != len(spaces) or len({int(one.n) for one in discrete}) != 1:
+        return 0
+    return int(discrete[0].n)
 
 
 @final
 class ActionMask(gym.Wrapper):
     """An observation carrying which of its actions are legal, beside the observation itself.
 
-    Only an env that masks something wants this. A run whose env masks nothing carries no mask at
-    all rather than an all-true one, and the Assembly reads a plain observation: the widths add up
-    on Atari, and a mask nothing ever reads is a leaf on every hop a Trajectory makes.
-
-    Every state has to leave at least one action legal, terminal ones included. A state that leaves
-    none has an undefined policy, and the nan that follows reaches the gradient through slots a loss
-    has already masked off — so it is an env to fix rather than a case to handle.
-
     Attributes:
-        legal: Reads the mask out of an env's info, defaulting to the key gymnasium reports it under.
+        mask_fn: Reads the mask out of an env's info, defaulting to the key gymnasium reports it under.
+        shape: The shape every mask this wrapper carries is read at — `legal_shape` of the action space.
     """
 
-    def __init__(self, env: gym.Env, legal: MaskFn = published) -> None:
-        if not isinstance(env.action_space, gym.spaces.Discrete):
-            raise TypeError(f"{env.action_space} has no actions to mask off, which only a discrete space has.")
+    def __init__(self, env: gym.Env, mask_fn: MaskFn = published) -> None:
         super().__init__(env)
-        self.legal = legal
+        self.mask_fn = mask_fn
+        self.shape = legal_shape(env.action_space)
         self.observation_space = gym.spaces.Dict(
-            {OBSERVATION: env.observation_space, ACTION_MASK: gym.spaces.MultiBinary(int(env.action_space.n))}
+            {OBSERVATION: env.observation_space, ACTION_MASK: gym.spaces.MultiBinary(self.shape)}
         )
 
     def reset(
@@ -57,9 +76,4 @@ class ActionMask(gym.Wrapper):
         return self.masked(observation, info), reward, terminated, truncated, info
 
     def masked(self, observation: Any, info: dict[str, Any]) -> dict[str, Any]:
-        """The mask reported beside this observation, so the two describe the same state.
-
-        Read out of the info rather than off the env, because that is where an env that has one puts
-        it, and re-deriving it from the env's own state means reaching past every wrapper to do it.
-        """
-        return {OBSERVATION: observation, ACTION_MASK: self.legal(info).astype(np.int8)}
+        return {OBSERVATION: observation, ACTION_MASK: self.mask_fn(info).astype(np.int8).reshape(self.shape)}

@@ -57,6 +57,20 @@ termination reads nothing from it. Either way it is the action and reward beside
 it that are meaningless, never the observation.
 _Avoid_: Dummy step, padding, invalid step, reset step
 
+**Agent axis**:
+The axis a field carries where a team acts in an environment, one entry per agent:
+`(E, A, ...)` acting and `(B, T, A, ...)` learning. An env with a single agent has no
+agent axis at all, so a network written for one says nothing about agents — every
+layer is polymorphic over its leading axes, which is what makes the arity cost
+nothing to ignore (ADR-0012).
+_Avoid_: multi-agent batch, MARL mode
+
+**Prefix**:
+The leading shape every field an Env stepper reports carries — `(E, A)` for a team
+and `(E,)` alone. The one place the arity is asked, so a caller sizing a buffer
+composes a shape rather than answering the question again.
+_Avoid_: width, batch shape, leading dims
+
 ### Acting
 
 **Roller**:
@@ -71,8 +85,9 @@ _Avoid_: Agent, network, model
 
 **Env stepper**:
 What a Roller steps to advance its environments, presenting one step API with a
-leading env axis on every field. Reports its finished episodes beside the step,
-so a Roller reads them the same way whatever built the environments.
+leading env axis and an Agent axis on every field. Reports its finished episodes
+beside the step, so a Roller reads them the same way whatever built the
+environments — one env, a loop over many, or a pool of processes.
 _Avoid_: Env, environment wrapper, vectoriser
 
 **Sync point**:

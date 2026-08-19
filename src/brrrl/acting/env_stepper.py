@@ -1,26 +1,30 @@
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import Any, Protocol
+from functools import partial
+from typing import Any, Protocol, final
 
 import gymnasium as gym
 import numpy as np
-from gymnasium.vector import AutoresetMode, VectorEnv
+from gymnasium.vector import AsyncVectorEnv, AutoresetMode, VectorEnv
 
 from brrrl.types import Metrics, StepResult
-from brrrl.wrappers.widening import EPISODE_MASK, EPISODE_STATS, Widened
+from brrrl.wrappers.agents import Agents
+from brrrl.wrappers.autoreset import Autoreset
+from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, Reduction
+from brrrl.wrappers.looped import Looped
 
 EPISODE_METRICS = {"r": "episode_return", "l": "episode_length", "t": "episode_time"}
-"""What each field of the episode-statistics schema is reported as."""
 
-OWNED_WRAPPERS = (gym.wrappers.Autoreset,)
-"""What a stepper applies itself, and so must not be handed a second copy of."""
+# What a stepper applies itself, and so must not be already present in the env
+OWNED_WRAPPERS = (
+    gym.wrappers.Autoreset,
+    Autoreset,
+    Agents,
+    gym.wrappers.RecordEpisodeStatistics,
+    EpisodeStatistics,
+)
 
-REWARD_WRAPPERS = (gym.RewardWrapper, gym.wrappers.NormalizeReward)
-"""What scales a reward, and so what episode statistics have to be taken underneath."""
-
-type EnvWrap = Callable[[gym.Env], gym.Env]
+# Signature for the wrapping function a stepper applies over its vectorised envs
 type VectorWrap = Callable[[VectorEnv], VectorEnv]
-"""What a stepper hands its envs to once it has applied its own. A stepper knows nothing of what
-either does, only that its statistics are underneath and its autoreset above."""
 
 
 def same[E](env: E) -> E:
@@ -29,7 +33,17 @@ def same[E](env: E) -> E:
 
 
 class EnvStepper[Obs, Act](Protocol):
-    """The gymnasium step API, with a leading env axis on every field.
+    """The gymnasium step API, with a leading env axis and an agent axis where there is a team.
+
+    Reward, both flags and every field derived from them arrive at ``(E, A, ...)`` for an env with a
+    team acting in it, and at ``(E, ...)`` for one with a single agent, which has no agent axis at
+    all. `prefix` is that leading shape, and the only place the arity is asked.
+
+    A width-one axis would be the tidier contract here, and it was the one this had. It cost more
+    than it bought: nothing downstream branches on the arity either way — a Learner's arithmetic is
+    polymorphic over leading axes, the same property that lets acting at ``(E, ...)`` and learning at
+    ``(T, E, ...)`` call one network — while a width-one axis obliged every network written for a
+    single agent to produce an agent axis nobody had asked about (ADR-0012).
 
     Beside the step it reports its finished episodes in the vector episode-statistics schema:
     full-width ``r``, ``l`` and ``t`` under ``episode``, and the boolean mask naming which envs
@@ -40,28 +54,42 @@ class EnvStepper[Obs, Act](Protocol):
     @property
     def num_envs(self) -> int: ...
 
+    @property
+    def num_agents(self) -> int: ...
+
     def reset(self) -> tuple[Obs, dict[str, Any]]: ...
 
     def step(self, action: Act) -> StepResult[Obs]: ...
 
 
-class GymStepper[Obs, Act]:
-    """One `gym.Env` presented as an `EnvStepper`: ``num_envs=1``.
+@final
+class LoopedStepper[Obs, Act]:
+    """One env per maker, stepped in turn, presented as an `EnvStepper`.
 
-    Applies the autoreset the Trajectory layout rests on, the episode statistics its half of the
-    `EnvStepper` contract needs, and the widening that gives every field the env axis a Roller
-    reads. Everything else about an env is the caller's, which is what leaves this holding only the
-    count and the refusal.
+    Envs run in a loop on a single process, not in parallel.
     """
 
-    def __init__(self, env: gym.Env, wrap: EnvWrap = same) -> None:
-        """``wrap`` is the single-env half of the vector stepper's: applied over the statistics, so
-        what it scales is what a Learner sees and never what an episode return is reported in."""
-        self.env = Widened(gym.wrappers.Autoreset(wrap(recorded(steppable(env)))))
+    def __init__(
+        self,
+        env_makers: list[Callable[[], gym.Env]],
+        num_agents: int = 1,
+        wrap: VectorWrap = same,
+        reduce: Reduction = np.sum,
+    ) -> None:
+        """Build one env per maker, and hand them all to `Looped`.
+
+        Args:
+            env_makers: One factory per env, so how many there are is the env axis.
+            num_agents: How wide the agent axis is, one for an env with a single agent.
+            wrap: Applied to the vectorised envs, for a transform that wants them all at once.
+            reduce: How an episode's per-agent returns become the number a run is judged on.
+        """
+        self.num_agents = num_agents
+        self.env = wrap(Looped([built(make_env, num_agents, reduce) for make_env in counted(env_makers)]))
 
     @property
     def num_envs(self) -> int:
-        return 1
+        return self.env.num_envs
 
     def reset(self) -> tuple[Obs, dict[str, Any]]:
         return self.env.reset()
@@ -69,28 +97,42 @@ class GymStepper[Obs, Act]:
     def step(self, action: Act) -> StepResult[Obs]:
         return self.env.step(action)
 
+    def close(self) -> None:
+        self.env.close()
 
-class GymVectorStepper[Obs, Act]:
-    """``num_envs`` copies of one `gym.Env` presented as an `EnvStepper`, batching every act call.
 
-    It vectorises what it is handed rather than taking an already-vectorised env, so the autoreset
-    mode the Trajectory layout rests on is this class's decision and not a caller's (ADR-0001).
-    That is why the constructor takes a factory: `num_envs` distinct envs cannot be made from one
-    instance.
-    """
+@final
+class AsyncStepper[Obs, Act]:
+    """``num_envs`` envs stepped on their own processes, presented as an `EnvStepper`."""
 
-    def __init__(self, make_env: Callable[[], gym.Env], num_envs: int, wrap: VectorWrap = same) -> None:
-        """Vectorise ``make_env`` ``num_envs`` times, and hand the result to ``wrap``.
+    def __init__(
+        self,
+        env_makers: list[Callable[[], gym.Env]],
+        num_agents: int = 1,
+        wrap: VectorWrap = same,
+        reduce: Reduction = np.sum,
+        shared_memory: bool = True,
+        context: str | None = "forkserver",
+    ) -> None:
+        """Build one env per maker, one per process, and hand the result to ``wrap``.
 
         Args:
-            make_env: Builds one env.
-            num_envs: How many to build.
+            env_makers: One factory per env. Each is called in its own worker, and shipped there by
+                cloudpickle, so a closure is fine and anything it captures has to survive the trip.
+            num_agents: How wide the agent axis is, one for an env with a single agent.
             wrap: Applied to the vectorised envs, for a transform that wants them all at once.
+            reduce: How an episode's per-agent returns become the number a run is judged on.
+            shared_memory: Pass observations back through shared memory rather than the pipe.
+            context: How the workers are started.
         """
-        if num_envs < 1:
-            raise ValueError(f"num_envs is {num_envs}, and a stepper with no environments steps nothing.")
+        self.num_agents = num_agents
         self.env = wrap(
-            gym.vector.SyncVectorEnv([vectorisable(make_env)] * num_envs, autoreset_mode=AutoresetMode.NEXT_STEP)
+            AsyncVectorEnv(
+                [partial(built, make_env, num_agents, reduce) for make_env in counted(env_makers)],
+                shared_memory=shared_memory,
+                autoreset_mode=AutoresetMode.DISABLED,
+                context=context,
+            )
         )
 
     @property
@@ -103,68 +145,66 @@ class GymVectorStepper[Obs, Act]:
     def step(self, action: Act) -> StepResult[Obs]:
         return self.env.step(action)
 
+    def close(self) -> None:
+        self.env.close()
 
-def applied(env: gym.Env) -> Iterator[type[gym.Wrapper]]:
+
+def prefix(num_envs: int, num_agents: int) -> tuple[int, ...]:
+    """The leading shape every field a stepper reports carries: ``(E, A)`` for a team, ``(E,)`` alone.
+
+    The one place the arity is asked, so that a caller sizing a buffer against a stepper composes a
+    shape rather than answering the question again.
+    """
+    return (num_envs, num_agents) if num_agents > 1 else (num_envs,)
+
+
+def required_wrappers(env: gym.Env, num_agents: int, reduce: Reduction = np.sum) -> gym.Env:
+    """``env`` with everything a stepper applies itself, in the order its guarantees need.
+
+    `Agents` goes on only where there is a team to widen to. A single agent's env is left with the
+    scalar reward and bare flags a `gym.Env` reports, which the vectorisation above stacks into the
+    ``(E,)`` a Roller reads.
+    """
+    wrapped = Autoreset(EpisodeStatistics(steppable(env), reduce))
+    return Agents(wrapped, num_agents) if num_agents > 1 else wrapped
+
+
+def built(make_env: Callable[[], gym.Env], num_agents: int, reduce: Reduction = np.sum) -> gym.Env:
+    """`required_wrappers` around the env ``make_env`` builds, where a stepper has a maker not an env."""
+    return required_wrappers(make_env(), num_agents, reduce)
+
+
+def counted(env_makers: list[Callable[[], gym.Env]]) -> list[Callable[[], gym.Env]]:
+    """``env_makers``, refusing an env axis with nothing on it."""
+    if not env_makers:
+        raise ValueError("env_makers is empty, and a stepper with no environments steps nothing.")
+    return env_makers
+
+
+def wrappers_of(env: gym.Env) -> Iterator[type[gym.Wrapper]]:
     """Every wrapper already around ``env``, outermost first."""
     while isinstance(env, gym.Wrapper):
         yield type(env)
         env = env.env
 
 
-def vectorisable(make_env: Callable[[], gym.Env]) -> Callable[[], gym.Env]:
-    """``make_env``, refusing anything a vector stepper cannot step and recording what it must.
-
-    The vector env owns the autoreset across all of its envs, so a per-env copy of it is the same
-    double-wrap `GymStepper` refuses, one level down.
-    """
-
-    def build() -> gym.Env:
-        env = make_env()
-        if isinstance(env, gym.vector.VectorEnv):
-            raise TypeError(
-                f"{type(env).__name__} is already vectorised, and ``GymVectorStepper`` vectorises what it "
-                "is given. Pass a factory for one env and the count you want."
-            )
-        return recorded(steppable(env))
-
-    return build
-
-
 def steppable(env: gym.Env) -> gym.Env:
     """``env``, refusing a wrapper a stepper applies itself and would otherwise apply twice."""
-    if owned := [wrapper.__name__ for wrapper in applied(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
-        raise ValueError(f"{owned} already wraps this env, and a stepper applies that itself. Pass the env without it.")
-    return env
-
-
-def recorded(env: gym.Env) -> gym.Env:
-    """``env`` reporting its finished episodes, in the units the environment itself pays out in.
-
-    A stepper applies the statistics when nothing has scaled the reward yet, which is most runs.
-    Once something has, only the caller can place them: they have to sit under the scaling, and a
-    wrapper applied from here would sit above it — reporting every episode return in units that
-    move with the policy, which is not something a later reader can undo or even notice.
-    """
-    chain = list(applied(env))  # Outermost first, so a wrapper deeper in it is one applied earlier.
-    statistics = [i for i, wrapper in enumerate(chain) if issubclass(wrapper, gym.wrappers.RecordEpisodeStatistics)]
-    scaling = [i for i, wrapper in enumerate(chain) if issubclass(wrapper, REWARD_WRAPPERS)]
-    if not scaling:
-        return env if statistics else gym.wrappers.RecordEpisodeStatistics(env)
-    if not statistics or min(statistics) < max(scaling):
-        raise ValueError(
-            f"{[chain[i].__name__ for i in scaling]} scales this env's reward, so "
-            f"{gym.wrappers.RecordEpisodeStatistics.__name__} has to wrap it underneath and be applied by you. "
-            "Otherwise every episode return is logged in scaled units."
+    if isinstance(env, VectorEnv):
+        raise TypeError(
+            f"{type(env).__name__} is already vectorised, and a stepper vectorises what it is given. "
+            "Pass a factory for one env per env you want."
         )
+    if owns := [wrapper.__name__ for wrapper in wrappers_of(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
+        raise ValueError(f"{owns} already wraps this env, and a stepper applies that itself. Pass the env without it.")
     return env
 
 
-def finished_episodes(infos: Iterable[Mapping[str, Any]]) -> Metrics:
+# TODO: move this to stats wrapper file?
+def episode_stats(infos: Iterable[Mapping[str, Any]]) -> Metrics:
     """Every episode that finished over a rollout, read out of the statistics schema.
 
-    A rollout in which none finished reports no keys at all rather than a zero or a nan. A stepper
-    that reports statistics without the mask naming which envs they belong to fails here, rather
-    than reporting nothing for the rest of the run.
+    A rollout in which none finished reports no keys at all rather than a zero or a nan.
     """
     finished = [(info[EPISODE_STATS], info[EPISODE_MASK]) for info in infos if EPISODE_STATS in info]
     if not finished:

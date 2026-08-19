@@ -4,7 +4,7 @@ import numpy as np
 from echo import TrajectoryAccumulator
 from numpy.typing import ArrayLike, NDArray
 
-from brrrl.acting.env_stepper import EnvStepper, finished_episodes
+from brrrl.acting.env_stepper import EnvStepper, episode_stats
 from brrrl.acting.policy import Policy, PolicyOutput
 from brrrl.types import TRANSITIONS, VERSION, Metrics, Trajectory, Transition
 
@@ -37,20 +37,25 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         trajectory: type[T],
         num_steps: int,
     ) -> None:
+        """The shape every field leads with comes off the stepper, which is what knows it: ``(E, A)``
+        for a team and ``(E,)`` for a single agent, which has no agent axis at all. This is the only
+        place a Roller asks how many agents there are."""
         self.stepper = stepper
         self.policy = policy
         self.accumulator = accumulator
         self.record = record
         self.trajectory = trajectory
         self.num_steps = num_steps
+        self.width = (stepper.num_envs, stepper.num_agents) if stepper.num_agents > 1 else (stepper.num_envs,)
         self.prev_obs, _ = stepper.reset()
-        self.prev_term = np.zeros(stepper.num_envs, np.bool_)
-        self.prev_trunc = np.zeros(stepper.num_envs, np.bool_)
+        self.prev_term = np.zeros(self.width, np.bool_)
+        self.prev_trunc = np.zeros(self.width, np.bool_)
 
     @property
     def num_transitions(self) -> int:
-        """How many Transitions one rollout produces. The trailing slot is never stepped, so it is
-        not one of them."""
+        """How many Transitions one rollout produces. A Transition is one environment step however
+        many agents took it, so this does not multiply by the agent count. The trailing slot is never
+        stepped, so it is not one of them."""
         return self.num_steps * self.stepper.num_envs
 
     def rollout(self) -> tuple[T, Metrics]:
@@ -65,10 +70,10 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
             versions.append(version)
 
         trailing, version = self.policy.act(self.prev_obs)
-        no_reward = np.zeros(self.stepper.num_envs)
+        no_reward = np.zeros(self.width)
         transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, no_reward, trailing)
         self.accumulator.add(TRANSITIONS, transition)
         versions.append(version)
 
         self.accumulator.add(VERSION, np.array([np.mean(versions)], np.float32))
-        return self.trajectory(**self.accumulator.build()), finished_episodes(infos)
+        return self.trajectory(**self.accumulator.build()), episode_stats(infos)
