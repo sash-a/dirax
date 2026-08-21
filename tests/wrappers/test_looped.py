@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
-from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS
 from brrrl.wrappers.looped import Looped
+from brrrl.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS
 
 CARTPOLE_OBS = 4
 TAXI_ACTIONS = 6
@@ -90,6 +90,38 @@ def test_an_info_without_statistics_passes_through_untouched() -> None:
     _, info = env.reset()
 
     assert EPISODE_STATS not in info and EPISODE_MASK not in info
+
+
+class Instrumented(gym.Wrapper):
+    """An env that reports a metric of its own, which is the other thing a step info carries."""
+
+    def step(self, action: Any) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        return observation, reward, terminated, truncated, info | {ENV_STATS: {"shaped": 2.5}}
+
+
+def test_an_envs_own_metrics_cross_in_the_same_schema() -> None:
+    """The episode key is not the only one a Roller reads. This loop reported the episode and dropped
+    everything beside it, so an env's own metrics reached a run through the process pool and nowhere
+    else — the arrangement in which a metric vanishes on the path you debug on."""
+    env = Looped([Instrumented(cartpole()), Instrumented(cartpole())])
+    env.reset()
+
+    info = env.step(np.zeros(2, int))[4]
+
+    assert info[ENV_STATS]["shaped"].tolist() == [2.5, 2.5]
+    assert info[ENV_STATS]["_shaped"].tolist() == [True, True]
+
+
+def test_a_key_only_one_env_reported_names_the_env_that_did() -> None:
+    """A vector env fills a slot per env whether or not it had one to give, so the mask beside the
+    values is the only thing that says which of them the env meant."""
+    env = Looped([Instrumented(cartpole()), cartpole()])
+    env.reset()
+
+    info = env.step(np.zeros(2, int))[4]
+
+    assert info[ENV_STATS]["_shaped"].tolist() == [True, False]
 
 
 def test_a_dict_observation_widens_leaf_by_leaf() -> None:

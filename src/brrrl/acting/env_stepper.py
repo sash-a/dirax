@@ -1,4 +1,4 @@
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from functools import partial
 from typing import Any, Protocol, final
 
@@ -6,13 +6,11 @@ import gymnasium as gym
 import numpy as np
 from gymnasium.vector import AsyncVectorEnv, AutoresetMode, VectorEnv
 
-from brrrl.types import Metrics, StepResult
+from brrrl.types import StepResult
 from brrrl.wrappers.agents import Agents
 from brrrl.wrappers.autoreset import Autoreset
-from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, Reduction
 from brrrl.wrappers.looped import Looped
-
-EPISODE_METRICS = {"r": "episode_return", "l": "episode_length", "t": "episode_time"}
+from brrrl.wrappers.statistics import EpisodeStatistics, Reduction
 
 # What a stepper applies itself, and so must not be already present in the env
 OWNED_WRAPPERS = (
@@ -198,17 +196,3 @@ def steppable(env: gym.Env) -> gym.Env:
     if owns := [wrapper.__name__ for wrapper in wrappers_of(env) if issubclass(wrapper, OWNED_WRAPPERS)]:
         raise ValueError(f"{owns} already wraps this env, and a stepper applies that itself. Pass the env without it.")
     return env
-
-
-# TODO: move this to stats wrapper file?
-def episode_stats(infos: Iterable[Mapping[str, Any]]) -> Metrics:
-    """Every episode that finished over a rollout, read out of the statistics schema.
-
-    A rollout in which none finished reports no keys at all rather than a zero or a nan.
-    """
-    finished = [(info[EPISODE_STATS], info[EPISODE_MASK]) for info in infos if EPISODE_STATS in info]
-    if not finished:
-        return {}
-    return {
-        name: np.concatenate([stats[key][mask] for stats, mask in finished]) for key, name in EPISODE_METRICS.items()
-    }

@@ -29,10 +29,12 @@ from gymnasium.wrappers.vector import NormalizeReward
 from brrrl.acting.env_stepper import AsyncStepper, LoopedStepper, prefix
 from brrrl.wrappers.agents import Agents
 from brrrl.wrappers.autoreset import Autoreset
-from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS, EpisodeStatistics
 from brrrl.wrappers.looped import Looped
+from brrrl.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, env_stats
 
 NUM_ENVS, AGENTS, LENGTH, CARTPOLE_OBS = 2, 3, 5, 4
+SHAPED = 2.5
+"""What `Instrumented` pays itself, so an env's own metric is assertable rather than recorded."""
 PAY = (1.0, 2.0, 3.0)
 """What each agent is paid a step, so a team's episode return is assertable rather than recorded."""
 
@@ -176,6 +178,30 @@ def test_the_agent_axis_is_not_put_on_an_env_with_a_single_agent() -> None:
 
     with closing(single(Team, AGENTS)) as stepper:
         assert any(isinstance(wrapper, Agents) for wrapper in wrappers_of(inner(stepper)))
+
+
+class Instrumented(gym.Wrapper):
+    """An env reporting a metric of its own, which only the env that owns it can name."""
+
+    def step(self, action: Any) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        return observation, reward, terminated, truncated, info | {ENV_STATS: {"shaped": SHAPED}}
+
+
+def instrumented() -> gym.Env:
+    return Instrumented(cartpole())
+
+
+@pytest.mark.parametrize("build", VECTOR)
+def test_an_envs_own_metrics_read_the_same_whichever_vectorisation_built_them(build) -> None:
+    """The property the whole schema is for. These two aggregate their infos differently, and a
+    metric that survived one and not the other would be a curve that changed shape with a placement
+    decision — the reader would have no way to tell."""
+    with closing(build(instrumented)) as stepper:
+        stepper.reset()
+        infos = [stepper.step(idle(stepper))[4] for _ in range(3)]
+
+    assert np.asarray(env_stats(infos)["shaped"]).tolist() == [SHAPED] * 3 * NUM_ENVS
 
 
 def inner(stepper: LoopedStepper) -> gym.Env:

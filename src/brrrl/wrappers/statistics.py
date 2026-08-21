@@ -1,15 +1,19 @@
 import time
-from collections.abc import Callable, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any, SupportsFloat, final
 
 import gymnasium as gym
 import numpy as np
 from numpy.typing import NDArray
 
+from brrrl.types import Metrics
 from brrrl.wrappers.agents import over
 
 EPISODE_STATS = "episode"
+ENV_STATS = "env_stats"
 EPISODE_MASK = "_episode"
+EPISODE_METRICS = {"r": "episode_return", "l": "episode_length", "t": "episode_time"}
 
 # How an episode's per-agent returns become the one number a run is judged on.
 type Reduction = Callable[[NDArray[np.floating]], np.floating]
@@ -57,11 +61,40 @@ class EpisodeStatistics(gym.Wrapper):
         }
 
 
-def merge_ep_stats(infos: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """One env-per-info loop's episode statistics in the schema a vector env reports them in."""
-    finished = np.array([EPISODE_STATS in info for info in infos], np.bool_)
-    if not finished.any():
+def episode_stats(infos: Iterable[Mapping[str, Any]]) -> Metrics:
+    """Every episode that finished over a rollout, read out of the statistics schema.
+
+    A rollout in which none finished reports no keys at all rather than a zero or a nan.
+    """
+    finished = [(info[EPISODE_STATS], info[EPISODE_MASK]) for info in infos if EPISODE_STATS in info]
+    if not finished:
         return {}
-    keys = next(info[EPISODE_STATS] for info in infos if EPISODE_STATS in info)
-    stats = {key: np.array([info.get(EPISODE_STATS, {}).get(key, 0) for info in infos], np.float32) for key in keys}
-    return {EPISODE_STATS: stats, EPISODE_MASK: finished}
+    return {
+        name: np.concatenate([stats[key][mask] for stats, mask in finished]) for key, name in EPISODE_METRICS.items()
+    }
+
+
+def env_stats(infos: Iterable[Mapping[str, Any]]) -> Metrics:
+    """Whatever an env reported for itself over a rollout, one array per name, read from `ENV_STATS`.
+
+    Every metric arrives beside the ``_name`` mask saying which envs reported it, so the slots a
+    vector env filled for the envs that did not are dropped rather than meaned in as zeros. A rollout
+    in which nothing reported has no keys at all, for the same reason `episode_stats` has none.
+    """
+    reported = defaultdict(list)
+    for info in infos:
+        stats = info.get(ENV_STATS, {})
+        for name in stats:
+            if not name.startswith("_"):
+                reported[name].append(np.asarray(stats[name])[stats[f"_{name}"]])
+    return {name: numeric(np.concatenate(values)) for name, values in reported.items()}
+
+
+def numeric(values: NDArray) -> NDArray:
+    """``values`` as the numbers they were reported as.
+
+    A vector env files a type it does not recognise into an object array, so an env reporting a list
+    where another reports an array of the same numbers arrives differently for no reason a caller
+    could see. Reading one back through ``tolist`` is what makes the two agree.
+    """
+    return np.array(values.tolist()) if values.dtype == object else values

@@ -4,9 +4,10 @@ import numpy as np
 from echo import TrajectoryAccumulator
 from numpy.typing import ArrayLike, NDArray
 
-from brrrl.acting.env_stepper import EnvStepper, episode_stats
+from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
 from brrrl.types import TRANSITIONS, VERSION, Metrics, Trajectory, Transition
+from brrrl.wrappers.statistics import env_stats, episode_stats
 
 type RecordFn[Obs, O: PolicyOutput] = Callable[
     [Obs, NDArray[np.bool_], NDArray[np.bool_], NDArray[np.floating], O], Transition
@@ -76,4 +77,4 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         versions.append(version)
 
         self.accumulator.add(VERSION, np.array([np.mean(versions)], np.float32))
-        return self.trajectory(**self.accumulator.build()), episode_stats(infos)
+        return self.trajectory(**self.accumulator.build()), {**episode_stats(infos), **env_stats(infos)}

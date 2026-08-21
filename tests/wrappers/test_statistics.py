@@ -12,7 +12,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from brrrl.wrappers.episodes import EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, merge_ep_stats
+from brrrl.wrappers.statistics import ENV_STATS, EPISODE_STATS, EpisodeStatistics, env_stats
 
 STEPS, SEED, AGENTS = 200, 7, 3
 PAID = (1.0, 0.0, 3.0)
@@ -99,29 +99,56 @@ def test_an_episode_is_reported_when_every_agent_is_done_and_not_before() -> Non
     assert reported == [False] * (LENGTH - 1) + [True]
 
 
-def test_one_envs_statistics_widen_into_the_vector_schema() -> None:
-    """A Roller's episode reader knows one schema, so one env owes it the same two keys a vector env
-    reports: full-width values, and the mask naming which envs they belong to."""
-    widened = merge_ep_stats([{EPISODE_STATS: {"r": 12.0, "l": 4, "t": 0.5}}])
+def reported(*envs: float | None) -> dict[str, Any]:
+    """One step's info for a metric that only some envs reported, in the vector schema.
 
-    assert widened[EPISODE_STATS]["r"].tolist() == [12.0]
-    assert widened[EPISODE_MASK].tolist() == [True]
-
-
-def test_an_info_that_finished_no_episode_widens_into_nothing() -> None:
-    """Inventing a zero for a step that finished nothing would report an episode that never happened
-    and drag every windowed mean toward it."""
-    assert merge_ep_stats([{"other": 1}]) == {}
+    A vector env fills a slot for every env and names the ones that meant it in the ``_name`` mask,
+    so the zeros below are what an env that reported nothing leaves behind.
+    """
+    mask = [value is not None for value in envs]
+    return {ENV_STATS: {"shaped": np.array([value or 0.0 for value in envs]), "_shaped": np.array(mask)}}
 
 
-def test_a_loop_over_envs_reports_the_same_schema() -> None:
-    """One env is the same call at width one. Which envs finished is the mask's to say, so the values
-    in the slots that did not are never read and never have to mean anything."""
-    aggregated = merge_ep_stats([{}, {EPISODE_STATS: {"r": 3.0, "l": 2, "t": 0.1}}, {}])
-
-    assert aggregated[EPISODE_MASK].tolist() == [False, True, False]
-    assert aggregated[EPISODE_STATS]["r"].tolist() == [0.0, 3.0, 0.0]
+def test_a_metric_only_some_envs_reported_drops_the_slots_they_left() -> None:
+    """The zero a vector env fills an unreported slot with is filler, not data. Meaning it in would
+    drag the metric toward zero by however many envs were quiet, which no reader could spot."""
+    assert np.asarray(env_stats([reported(100.0, None)])["shaped"]).tolist() == [100.0]
 
 
-def test_a_loop_in_which_nothing_finished_reports_no_keys_at_all() -> None:
-    assert merge_ep_stats([{}, {}]) == {}
+def test_the_masks_are_read_rather_than_reported() -> None:
+    """They arrive beside every metric a vector env aggregates. Logged as metrics themselves they
+    would double the series count, and each would read as a clean number rather than an obvious
+    mistake — the mean of a bool mask is a fraction between zero and one."""
+    assert list(env_stats([reported(1.0, 2.0)])) == ["shaped"]
+
+
+def test_every_step_of_a_rollout_lands_in_one_array() -> None:
+    """What a Roller hands the reader is the whole rollout, so a metric reported at several steps is
+    one series rather than one per step."""
+    assert np.asarray(env_stats([reported(1.0, 2.0), reported(None, 3.0)])["shaped"]).tolist() == [1.0, 2.0, 3.0]
+
+
+def filed(*values: list[int]) -> np.ndarray:
+    """One env's list-valued metric per slot, as a vector env files a type it does not recognise."""
+    array = np.empty(len(values), dtype=object)
+    for index, value in enumerate(values):
+        array[index] = value
+    return array
+
+
+def test_a_metric_reported_as_a_list_reads_as_the_numbers_it_is() -> None:
+    """A vector env files a type it does not recognise into an object array, so two envs reporting the
+    same numbers — one as a list, one as an array — would arrive differently. The accumulator squares
+    what it folds, which an object array cannot do, so the run dies at the first record rather than
+    where the list was written."""
+    listed = {ENV_STATS: {"pair": filed([1, 2], [3, 4]), "_pair": np.array([True, True])}}
+    arrayed = {ENV_STATS: {"pair": np.array([[1, 2], [3, 4]]), "_pair": np.array([True, True])}}
+
+    assert np.asarray(env_stats([listed])["pair"]).dtype != object
+    assert np.asarray(env_stats([listed])["pair"]).tolist() == np.asarray(env_stats([arrayed])["pair"]).tolist()
+
+
+def test_a_rollout_that_reported_nothing_has_no_keys_at_all() -> None:
+    """The same silence `episode_stats` keeps, and for the same reason: a zero here is an env metric
+    that never happened."""
+    assert env_stats([{}, {EPISODE_STATS: {"r": 1.0}}]) == {}

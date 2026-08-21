@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any, final
 
 import gymnasium as gym
@@ -6,7 +7,6 @@ from gymnasium.vector import VectorEnv
 from gymnasium.vector.utils import batch_space, concatenate, create_empty_array
 
 from brrrl.types import StepResult
-from brrrl.wrappers.episodes import merge_ep_stats
 
 
 @final
@@ -24,9 +24,8 @@ class Looped(VectorEnv):
     def reset(
         self, *, seed: int | list[int] | None = None, options: dict[str, Any] | None = None
     ) -> tuple[Any, dict[str, Any]]:
-        """No episode finishes on a reset, and the episode key is the only one that crosses."""
         resets = [env.reset(seed=s, options=options) for env, s in zip(self.envs, seeded(seed, self.num_envs))]
-        return self.stacked_obs([observation for observation, _ in resets]), {}
+        return self.stacked_obs([observation for observation, _ in resets]), self.merged([i for _, i in resets])
 
     def step(self, actions: Any) -> StepResult[Any]:
         """The env axis comes off the actions on the way in and back on to everything on the way out."""
@@ -37,15 +36,24 @@ class Looped(VectorEnv):
             np.stack(rewards),
             np.stack(terminations),
             np.stack(truncations),
-            merge_ep_stats(infos),
+            self.merged(infos),
         )
+
+    def merged(self, infos: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        """Every env's info in the schema a vector env reports them in: the values at full width
+        under each key, and the ``_key`` mask naming which envs reported one.
+        """
+        merged: dict[str, Any] = {}
+        for index, info in enumerate(infos):
+            merged = self._add_info(merged, info, index)
+        return merged
 
     def stacked_obs(self, observations: list[Any]) -> Any:
         """Stacks a list of observations according to the observation space."""
         space = self.single_observation_space
         return concatenate(space, observations, create_empty_array(space, n=self.num_envs))
 
-    def close_extras(self, **kwargs: Any) -> None:
+    def close(self, **kwargs: Any) -> None:
         for env in self.envs:
             env.close()
 

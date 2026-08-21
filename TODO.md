@@ -14,7 +14,7 @@
   - [ ] MAPPO
 
 ## Infra
-- [ ] Capture env metrics
+- [x] Capture env metrics
 - [ ] Distributed trainer
 - [ ] Distributed policy
 - [ ] Distributed stepper
