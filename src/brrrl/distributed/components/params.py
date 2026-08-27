@@ -4,11 +4,11 @@ from typing import ClassVar, Literal, overload
 from ray.actor import ActorHandle
 
 from brrrl.distributed.placement.component import Behaviour
-from brrrl.params.params import InMemoryParamStore
+from brrrl.params.params import ParamStore
 from brrrl.types import Params, Version, VersionedParams
 
 
-class ParamStore:
+class RayParamStore:
     """The one place live params exist; the Learner writes, Policies read.
 
     Holds the in-process Store rather than reimplementing it. The edge-triggered long-poll that
@@ -17,7 +17,7 @@ class ParamStore:
 
     RAY_OPTIONS: ClassVar[Behaviour] = {"max_restarts": 0}
 
-    def __init__(self, store: InMemoryParamStore) -> None:
+    def __init__(self, store: ParamStore) -> None:
         self.store = store
 
     def publish(self, params: Params) -> Version:
@@ -29,7 +29,7 @@ class ParamStore:
 
 @dataclass
 class RayParamSink:
-    store: ActorHandle
+    store: ActorHandle[RayParamStore]
 
     def publish(self, params: Params) -> Version:
         raise NotImplementedError
@@ -37,7 +37,7 @@ class RayParamSink:
 
 @dataclass
 class RayParamSource:
-    store: ActorHandle
+    store: ActorHandle[RayParamStore]
 
     @overload
     def get(self, block: Literal[True]) -> VersionedParams: ...
