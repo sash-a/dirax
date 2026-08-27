@@ -29,7 +29,7 @@ from numpy.typing import ArrayLike, NDArray
 from brrrl.acting.env_stepper import AsyncStepper, EnvStepper, LoopedStepper, prefix
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
-from brrrl.params.params import InMemoryParamStore, ParamSource
+from brrrl.params.params import ParamSource, ParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4
@@ -231,7 +231,7 @@ def build(
     leaves: int = 1,
 ) -> Roller[Any, Output, Trajectory]:
     stepper = counters() if stepper is None else stepper
-    store = InMemoryParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
+    store = ParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
     return Roller(
         stepper=stepper,
         policy=LocalPolicy(act_fn, store if source is None else source, jax.random.key(0)),

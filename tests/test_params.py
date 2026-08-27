@@ -6,7 +6,7 @@ The read side is asserted through the Policy that sits at the end of the chain, 
 
 import jax.numpy as jnp
 
-from brrrl.params.params import InMemoryParamStore
+from brrrl.params.params import ParamStore
 from brrrl.types import Params, VersionedParams
 
 
@@ -14,8 +14,8 @@ def params(scale: float) -> Params:
     return {"params": {"scale": jnp.float32(scale)}}
 
 
-def seeded(version: int = 0) -> InMemoryParamStore:
-    return InMemoryParamStore(VersionedParams(params(1.0), version))
+def seeded(version: int = 0) -> ParamStore:
+    return ParamStore(VersionedParams(params(1.0), version))
 
 
 def test_the_write_side_assigns_the_version() -> None:
