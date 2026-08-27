@@ -27,7 +27,7 @@ class ParamSink(Protocol):
 
 
 @dataclass
-class InMemoryParamStore:
+class ParamStore:
     """The one place live params exist in a process. Seeded by the driver, so no reader waits.
 
     Its Version is the run's monotonic authority: a resumed run seeds the count it left off at.

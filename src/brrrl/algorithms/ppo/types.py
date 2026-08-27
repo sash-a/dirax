@@ -1,12 +1,17 @@
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
+import distrax
 import gymnasium as gym
+import jax
 import numpy as np
 import optax
 import optree as tree
 from numpy.typing import NDArray
 
 from brrrl.types import TRANSITIONS, VERSION, Array, ArrayTree, Params, PRNGKey
+
+type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 
 
 class PPOPolicyOutput(NamedTuple):

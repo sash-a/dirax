@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
@@ -19,15 +18,22 @@ from brrrl.acting.env_stepper import AsyncStepper, prefix
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.estimators import generalised_advantages
-from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.types import (
+    PPOApply,
+    PPOBatch,
+    PPOPolicyOutput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
 from brrrl.metrics import default_local_logger
 from brrrl.metrics.stdout import StdoutLogger
-from brrrl.metrics.wandb import WandbLogger
 from brrrl.networks.distribution import normalised_entropy
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
-from brrrl.params.params import InMemoryParamStore
-from brrrl.types import Array, ArrayTree, Metrics, Params, PRNGKey, VersionedParams
+from brrrl.params.params import ParamStore
+from brrrl.types import Array, Metrics, Params, PRNGKey, VersionedParams
 from brrrl.utils.jax import tree_swapaxes
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
@@ -36,7 +42,6 @@ EPS = 1e-8
 MAX_GRAD_NORM = 0.5
 ADAM_EPS = 1e-5
 
-type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 type EpochCarry = tuple[PPOUpdateState, PPOBatch]
 type LossInfo = dict[str, jax.Array]
 
@@ -82,7 +87,6 @@ class PPOUpdateRule:
             and 0 <= self.gae_lambda <= 1
         )
 
-    @jax.jit(static_argnames=("self",))
     def update(self, state: PPOUpdateState, trajectory: PPOTrajectory) -> tuple[PPOUpdateState, Metrics]:
         chex.assert_tree_shape_prefix(trajectory.transitions, (self.batch_size, self.rollout_length + 1))
         advantages = generalised_advantages(
@@ -185,15 +189,6 @@ class PPOUpdateRule:
 
 
 class PPONetwork(nn.Module):
-    """Torso and Heads applied straight to whatever shape the observation arrives in.
-
-    It says nothing about agents, and that is the point. Every layer here is polymorphic over its
-    leading axes — the property that already lets acting at ``(E, ...)`` and learning at
-    ``(T, E, ...)`` call one network — so an env whose agents each observe for themselves hands this
-    an agent axis and gets one back on the action, the log-probability and the value, while an env
-    with a single agent hands it none and gets none back (ADR-0012).
-    """
-
     policy: nn.Module
 
     def setup(self):
@@ -254,7 +249,7 @@ def main() -> None:
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
-    param_source = InMemoryParamStore(VersionedParams(params, 0))
+    param_source = ParamStore(VersionedParams(params, 0))
     # Annealed to zero across the run
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
@@ -277,10 +272,11 @@ def main() -> None:
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
+    update_fn = jax.jit(updater.update)
 
     actor_recorder, learner_recorder = default_local_logger(
         StdoutLogger(),
-        WandbLogger("brrrl", tags=["PPO", env_name]),
+        # WandbLogger("brrrl", tags=["PPO", env_name]),
         log_every=roller.num_transitions * 20,
     )
 
@@ -289,7 +285,7 @@ def main() -> None:
         actor_recorder.record(act_metrics, num_transitions=roller.num_transitions)
         # A Roller rolls out time-major; ``batch_size`` is this worker's envs, so they lead.
         trajectory = trajectory._replace(transitions=tree_swapaxes(trajectory.transitions, 0, 1))
-        update_state, learn_metrics = updater.update(update_state, trajectory)
+        update_state, learn_metrics = update_fn(update_state, trajectory)
         param_source.publish(update_state.params)
         learner_recorder.record(learn_metrics)
 
