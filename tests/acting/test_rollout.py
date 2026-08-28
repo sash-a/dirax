@@ -145,7 +145,6 @@ class Transition(NamedTuple):
 
 class Trajectory(NamedTuple):
     transitions: Transition
-    version: NDArray[np.float32]
 
 
 def act_fn(params: Params, observation: Any, key: PRNGKey) -> Output:
@@ -192,7 +191,6 @@ def example(num_steps: int, num_envs: int, num_agents: int = 1, leaves: int = 1)
             value=zeros(np.float32),
             log_prob=zeros(np.float32),
         ),
-        "version": np.zeros((1,), np.float32),
     }
 
 
@@ -252,7 +250,7 @@ def test_a_slot_holds_an_observation_and_the_flags_that_describe_it(
 ) -> None:
     """The Final obs and the flag saying so are never in different slots, which is what makes the
     unusable slot readable off the flags already in it — a shift of zero rather than of one."""
-    trajectory, _ = roller.rollout()
+    (trajectory, _), _ = roller.rollout()
 
     assert trajectory.transitions.observation[..., 0].tolist() == np.array(OBSERVATIONS, np.float32).tolist()
     assert trajectory.transitions.terminated.tolist() == TERMINATED
@@ -264,7 +262,7 @@ def test_the_reward_action_and_value_in_a_slot_describe_the_transition_out_of_it
 ) -> None:
     """The other half of the alignment: the reward is what the slot's action earned, and the value
     is of the slot's own observation — so truncation bootstrapping reads the value beside the flag."""
-    trajectory, _ = roller.rollout()
+    (trajectory, _), _ = roller.rollout()
 
     transitions = trajectory.transitions
     assert transitions.reward.tolist() == REWARDS
@@ -278,7 +276,7 @@ def test_the_final_obs_slot_is_a_real_observation_with_a_real_value(
 ) -> None:
     """ADR-0001: only the action and reward beside it are meaningless. Optimising the slot away, or
     filling its observation with the reset that follows, is what this pins down."""
-    trajectory, _ = roller.rollout()
+    (trajectory, _), _ = roller.rollout()
 
     ended, terminal = 2, 0
     assert trajectory.transitions.terminated[ended, terminal]
@@ -291,7 +289,7 @@ def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Roller[Any, Outpu
     """T+1 in one Timescale, so an Estimator slices a single values array instead of stitching a
     bootstrap onto it. Filled rather than reserved: a loop that stopped at T would leave the last
     slot holding the buffer's zeros, which no observation of this env ever is."""
-    trajectory, _ = roller.rollout()
+    (trajectory, _), _ = roller.rollout()
 
     slots, envs = trajectory.transitions.value.shape
     assert slots == roller.num_transitions // envs + 1
@@ -301,36 +299,36 @@ def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Roller[Any, Outpu
 def test_the_trailing_slot_carries_the_flags_the_roller_was_already_holding() -> None:
     """Nothing about the trailing slot is synthesised: its flags may legitimately be set, and here
     the second env's episode ends on the very step the rollout stops at."""
-    trajectory, _ = build(num_steps=3).rollout()
+    (trajectory, _), _ = build(num_steps=3).rollout()
 
     assert trajectory.transitions.terminated[-1].tolist() == [False, True]
     assert trajectory.transitions.observation[-1, ..., 0].tolist() == np.array([2.0, 1.3], np.float32).tolist()
     assert trajectory.transitions.reward[-1].tolist() == [0.0, 0.0]
 
 
-def test_a_trajectory_carries_the_version_its_acts_ran_under(roller: Roller[Any, Output, Trajectory]) -> None:
-    """It rides in the pytree as its own Timescale, so a Trainer can log staleness across a batch
-    rather than as a second series that cannot be joined to the first."""
-    trajectory, _ = roller.rollout()
+def test_a_rollout_carries_the_version_its_acts_ran_under(roller: Roller[Any, Output, Trajectory]) -> None:
+    """It rides beside the payload rather than inside it, so a Trainer can log staleness across a
+    batch without the stamp ever reaching a device."""
+    (_, version), _ = roller.rollout()
 
-    assert trajectory.version.tolist() == [0.0]
-
-
-def test_a_trajectory_that_spanned_no_publish_carries_that_one_version() -> None:
-    """A Trajectory is stamped with the parameters that actually generated it."""
-    trajectory, _ = build(version=17).rollout()
-
-    assert trajectory.version.tolist() == [17.0]
+    assert version.tolist() == [0.0]
 
 
-def test_a_trajectory_that_spanned_a_publish_carries_the_mean_of_the_versions_it_acted_under() -> None:
+def test_a_rollout_that_spanned_no_publish_carries_that_one_version() -> None:
+    """A Rollout is stamped with the parameters that actually generated it."""
+    (_, version), _ = build(version=17).rollout()
+
+    assert version.tolist() == [17.0]
+
+
+def test_a_rollout_that_spanned_a_publish_carries_the_mean_of_the_versions_it_acted_under() -> None:
     """A Policy pulls at its own rate, so a rollout can straddle a publish. The mean is what makes
     that a number a Trainer can subtract from its own Version and read as staleness."""
     acted_under = [4, 4, 6, 6, 6]
 
-    trajectory, _ = build(source=Stepping([0, *acted_under])).rollout()
+    (_, version), _ = build(source=Stepping([0, *acted_under])).rollout()
 
-    assert trajectory.version.tolist() == [pytest.approx(5.2)]
+    assert version.tolist() == [pytest.approx(5.2)]
 
 
 def test_a_roller_reports_how_many_transitions_one_rollout_produces(
@@ -376,8 +374,8 @@ def test_every_stepper_produces_the_trajectory_gymnasiums_own_vector_env_does(st
     own is the oracle it is held to — the same oracle the layout was settled against. A hand-rolled
     reset that fired a step early would diverge here, and so would a third copy of it drifting."""
     with closing(stepper()) as built, closing(Oracle(lambda: Counter(LENGTHS[0]), 1)) as oracle:
-        ours, _ = build(stepper=built).rollout()
-        theirs, _ = build(stepper=oracle).rollout()
+        (ours, _), _ = build(stepper=built).rollout()
+        (theirs, _), _ = build(stepper=oracle).rollout()
 
         for one, other in zip(ours.transitions, theirs.transitions, strict=True):
             np.testing.assert_array_equal(one, other)
@@ -407,9 +405,9 @@ def test_consecutive_rollouts_are_one_unbroken_stream_of_environment_interaction
     start, so no episode is cut short by a Trajectory boundary."""
     roller = build()
 
-    first, _ = roller.rollout()
+    (first, _), _ = roller.rollout()
     trailing = first.transitions.observation[-1].copy()  # the accumulator's buffers are reused below
-    second, _ = roller.rollout()
+    (second, _), _ = roller.rollout()
 
     assert second.transitions.observation[0].tolist() == trailing.tolist()
     assert second.transitions.observation[..., 0].min() >= 2.0
@@ -419,7 +417,7 @@ def test_every_field_but_the_observation_carries_the_agent_axis() -> None:
     """``(T+1, E, A)`` on everything an Estimator or a mask reads. The observation keeps the shape
     the env gave it, because no stepper touches one and only the Assembly reads it."""
     with closing(teams()) as stepper:
-        trajectory, _ = build(stepper=stepper, leaves=AGENTS).rollout()
+        (trajectory, _), _ = build(stepper=stepper, leaves=AGENTS).rollout()
 
         transitions = trajectory.transitions
         width = (NUM_STEPS + 1, NUM_ENVS, AGENTS)
@@ -432,7 +430,7 @@ def test_each_agents_reward_lands_in_its_own_slot() -> None:
     """Agent ``i`` is paid ``i`` more than agent zero every step, so a reward array that had been
     broadcast from one agent's, or transposed, reads differently here."""
     with closing(teams()) as stepper:
-        trajectory, _ = build(stepper=stepper, leaves=AGENTS).rollout()
+        (trajectory, _), _ = build(stepper=stepper, leaves=AGENTS).rollout()
 
         first = trajectory.transitions.reward[0]
         assert first.tolist() == [[11.0, 12.0, 13.0]] * NUM_ENVS
@@ -442,7 +440,7 @@ def test_agents_that_terminate_on_different_steps_keep_the_disagreement() -> Non
     """SMAX's case. A flag collapsed to one bool per env and broadcast back would lose this, and a
     dead agent's slots would go unmasked for as long as the rest of the team kept playing."""
     with closing(teams(stagger=1)) as stepper:
-        trajectory, _ = build(stepper=stepper, leaves=AGENTS).rollout()
+        (trajectory, _), _ = build(stepper=stepper, leaves=AGENTS).rollout()
 
         ends = trajectory.transitions.terminated[:, 0].tolist()
         assert [True, False, False] in ends, f"the first agent should finish alone, got {ends}"

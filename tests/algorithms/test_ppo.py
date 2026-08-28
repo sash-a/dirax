@@ -150,7 +150,6 @@ def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
             value=np.asarray(value),
             log_prob=np.asarray(distribution.log_prob(action)),
         ),
-        version=np.zeros(1, np.float32),
     )
 
 
@@ -221,7 +220,7 @@ def test_a_final_obs_slot_cannot_move_any_metric(rule: PPOUpdateRule, state, tra
     _, garbage = rule.update(state, fouled)
 
     assert all(np.isclose(clean[key], garbage[key], atol=1e-5) for key in clean), {
-        key: (float(clean[key]), float(garbage[key]))
+        key: (float(np.asarray(clean[key])), float(np.asarray(garbage[key])))
         for key in clean
         if not np.isclose(clean[key], garbage[key], atol=1e-5)
     }
@@ -270,7 +269,7 @@ def test_repeated_updates_descend(rule: PPOUpdateRule, state, trajectory) -> Non
         first = metrics["value_loss"] if first is None else first
         last = metrics["value_loss"]
 
-    assert last < first
+    assert np.asarray(last) < np.asarray(first)
 
 
 @pytest.mark.parametrize(
@@ -303,7 +302,7 @@ def test_the_update_brackets_its_own_walk_from_the_behaviour_policy(rule: PPOUpd
     _, metrics = rule.update(state, trajectory)
 
     assert np.isclose(metrics["approx_kl_first_minibatch"], 0.0, atol=1e-6)
-    assert metrics["approx_kl_last_minibatch"] > 0
+    assert np.asarray(metrics["approx_kl_last_minibatch"]) > 0
 
 
 def test_mask_fraction_counts_the_slots_the_loss_is_allowed(rule: PPOUpdateRule, state, trajectory) -> None:

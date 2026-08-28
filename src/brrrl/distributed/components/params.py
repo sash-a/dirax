@@ -5,7 +5,7 @@ from ray.actor import ActorHandle
 
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.params.params import ParamStore
-from brrrl.types import Params, Version, VersionedParams
+from brrrl.types import Params, VersionedParams
 
 
 class RayParamStore:
@@ -20,7 +20,7 @@ class RayParamStore:
     def __init__(self, store: ParamStore) -> None:
         self.store = store
 
-    def publish(self, params: Params) -> Version:
+    def publish(self, params: Params) -> int:
         return self.store.publish(params)
 
     def get(self, block: bool) -> VersionedParams | None:
@@ -31,7 +31,7 @@ class RayParamStore:
 class RayParamSink:
     store: ActorHandle[RayParamStore]
 
-    def publish(self, params: Params) -> Version:
+    def publish(self, params: Params) -> int:
         raise NotImplementedError
 
 

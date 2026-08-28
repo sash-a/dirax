@@ -6,7 +6,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
-from brrrl.types import TRANSITIONS, VERSION, Metrics, Trajectory, Transition
+from brrrl.types import TRANSITIONS, Metrics, Rollout, Trajectory, Transition
 from brrrl.wrappers.statistics import env_stats, episode_stats
 
 type RecordFn[Obs, O: PolicyOutput] = Callable[
@@ -59,7 +59,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         stepped, so it is not one of them."""
         return self.num_steps * self.stepper.num_envs
 
-    def rollout(self) -> tuple[T, Metrics]:
+    def rollout(self) -> tuple[Rollout[T], Metrics]:
         infos, versions = [], []
         for _ in range(self.num_steps):
             output, version = self.policy.act(self.prev_obs)
@@ -76,5 +76,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         self.accumulator.add(TRANSITIONS, transition)
         versions.append(version)
 
-        self.accumulator.add(VERSION, np.array([np.mean(versions)], np.float32))
-        return self.trajectory(**self.accumulator.build()), {**episode_stats(infos), **env_stats(infos)}
+        version = np.array([np.mean(versions)], np.float32)
+        batch = Rollout(self.trajectory(**self.accumulator.build()), version)
+        metrics = {**episode_stats(infos), **env_stats(infos)}
+        return batch, metrics

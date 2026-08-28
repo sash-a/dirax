@@ -5,7 +5,6 @@ from ray.actor import ActorHandle
 
 from brrrl.acting.policy import LocalPolicy, PolicyOutput
 from brrrl.distributed.placement.component import Behaviour
-from brrrl.types import Version
 
 
 class InferenceServer[Obs, O: PolicyOutput]:
@@ -16,10 +15,10 @@ class InferenceServer[Obs, O: PolicyOutput]:
     def __init__(self, policy: LocalPolicy[Obs, O]) -> None:
         raise NotImplementedError
 
-    def version(self) -> Version:
+    def version(self) -> int:
         raise NotImplementedError
 
-    def act(self, observations: Obs) -> tuple[O, Version]:
+    def act(self, observations: Obs) -> tuple[O, int]:
         """Keys are the server's own: batching across Actors already makes such a run non-reproducible."""
         raise NotImplementedError
 
@@ -30,6 +29,6 @@ class InferenceServerPolicy[Obs, O: PolicyOutput]:
 
     server: ActorHandle
 
-    def act(self, observation: Obs) -> tuple[O, Version]:
+    def act(self, observation: Obs) -> tuple[O, int]:
         """The Version rides back on a call the client was making anyway, so aligning costs nothing."""
         raise NotImplementedError

@@ -1,12 +1,16 @@
-from typing import Callable, ClassVar, Iterator
+from collections.abc import Callable
+from typing import ClassVar
 
-import echo
+import jax
+import numpy as np
 
+from brrrl.distributed.components.echo import ReplayServer
+from brrrl.distributed.components.update_rule import DistributedUpdateRule
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricRecorder
 from brrrl.metrics.timer import AggregatedElapsed, Timer
 from brrrl.params.params import ParamSink
-from brrrl.types import Trajectory, UpdateRule, UpdateState
+from brrrl.types import Trajectory, UpdateState
 
 
 class Trainer[S: UpdateState, T: Trajectory]:
@@ -18,43 +22,49 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self,
         num_updates: int,
         state: S,
-        rule: UpdateRule[S, T],
-        # TODO: dataset + sink probably need to be factories
-        # TODO: strong type the metrics coming from dataset
-        # TODO: make a Trajectory store/sink/source
-        make_echo_server: Callable[[], echo.Server],
-        make_dataset: Callable[[echo.Server], Iterator[echo.Sample]],
+        rule: DistributedUpdateRule[S, T],
+        replay: ReplayServer,
         # TODO: give sink a send period or make a windowed sink
         # does this need to be a factory, it's gonna hold a ref to store
         make_param_sink: Callable[[], ParamSink],
         metric_recorder: MetricRecorder,
     ):
         self.num_updates = num_updates
-        self.state = state
         self.rule = rule
-        self.echo_server = make_echo_server()
-        self.dataset = make_dataset(self.echo_server)
+
         self.param_sink = make_param_sink()
+        self.param_sink.publish(state.params)
+
         self.metric_recorder = metric_recorder
         self.timer = Timer(AggregatedElapsed)
+
+        model_sharding, data_sharding = rule.shardings()
+        self.update_fn = rule.compiled(model_sharding, data_sharding)
+
+        self.replay_servers = replay.servers(len(data_sharding.device_set))
+        self.dataset = replay.dataset(self.replay_servers, data_sharding)
+
+        # TODO: will this automatically replicate?
+        self.state = jax.device_put(state, model_sharding)
 
     def run(self) -> None:
         for i in range(self.num_updates):
             with self.timer("traj_wait_time"):
-                batch, replay_metrics = next(self.dataset)
+                trajectory, roller_version, replay_metrics = next(self.dataset)
 
             with self.timer("update_dispatch_time"):
-                self.state, learn_metrics = self.rule.update(self.state, batch)
+                self.state, learn_metrics = self.rule.update(self.state, trajectory)
 
             # TODO: ideally we overlap this publish with the update.
             # To do this we'd need to publish the previous params
             # Or we could put this work on a thread
             with self.timer("param_publish_time"):
-                self.param_sink.publish(self.state.params)
+                trainer_version = self.param_sink.publish(self.state.params)
 
             # TODO: checkpointing
-            with self.timer("checkpoint_time"):
+            with self.timer("checkpointing_time"):
                 ...
 
+            versions = {"staleness": np.mean(trainer_version - roller_version)}
             # TODO: check if windowed metric recording will handle lists and scalars
-            self.metric_recorder.record(replay_metrics | learn_metrics | self.timer.dump())
+            self.metric_recorder.record({**replay_metrics, **learn_metrics, **versions, **self.timer.dump()})

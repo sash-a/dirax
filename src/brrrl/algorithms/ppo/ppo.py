@@ -281,10 +281,10 @@ def main() -> None:
     )
 
     for i in range(num_updates):
-        trajectory, act_metrics = roller.rollout()
+        rollout, act_metrics = roller.rollout()
         actor_recorder.record(act_metrics, num_transitions=roller.num_transitions)
         # A Roller rolls out time-major; ``batch_size`` is this worker's envs, so they lead.
-        trajectory = trajectory._replace(transitions=tree_swapaxes(trajectory.transitions, 0, 1))
+        trajectory = PPOTrajectory(tree_swapaxes(rollout.trajectory.transitions, 0, 1))
         update_state, learn_metrics = update_fn(update_state, trajectory)
         param_source.publish(update_state.params)
         learner_recorder.record(learn_metrics)

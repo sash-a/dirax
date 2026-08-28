@@ -4,7 +4,7 @@ from typing import Protocol
 import jax
 
 from brrrl.params.params import ParamSource
-from brrrl.types import Array, Params, PRNGKey, Version
+from brrrl.types import Array, Params, PRNGKey
 
 
 class PolicyOutput(Protocol):
@@ -17,7 +17,7 @@ type ActFn[Obs, O: PolicyOutput] = Callable[[Params, Obs, PRNGKey], O]
 
 
 class Policy[Obs, O: PolicyOutput](Protocol):
-    def act(self, observation: Obs) -> tuple[O, Version]:
+    def act(self, observation: Obs) -> tuple[O, int]:
         """Act on host arrays and return them, beside the Version the params behind them carry.
 
         When to align with new params is the Policy's own business, so nothing here forces a Sync
@@ -39,13 +39,13 @@ class LocalPolicy[Obs, O: PolicyOutput]:
         self.key = key
         self.params = source.get(block=True)
 
-    def sync(self) -> Version:
+    def sync(self) -> int:
         """Never blocks: staleness has no reason to become a stall."""
         if (latest := self.source.get(block=False)) is not None:
             self.params = latest
         return self.params.version
 
-    def act(self, observation: Obs) -> tuple[O, Version]:
+    def act(self, observation: Obs) -> tuple[O, int]:
         """Syncs first, so a publish reaches a rollout the step after it lands rather than the next
         Trajectory. One device-to-host transfer for the whole tree, not one per leaf per step."""
         version = self.sync()

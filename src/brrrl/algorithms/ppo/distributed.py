@@ -8,13 +8,16 @@ import jax
 import numpy as np
 import optax
 import ray
-from echo import Server, TrajectoryAccumulator
+from echo import TrajectoryAccumulator
 from gymnasium.wrappers.vector import NormalizeReward
 
 from brrrl.acting.env_stepper import LoopedStepper, prefix
 from brrrl.algorithms.ppo.ppo import PPOUpdateRule
 from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.distributed.components.echo import ReplayServer
 from brrrl.distributed.components.params import RayParamSink, RayParamStore
+from brrrl.distributed.components.trainer import Trainer
+from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
@@ -73,11 +76,14 @@ def main(config):
     num_minibatches = 4
     gamma = 0.99
     learning_rate = 3e-4
+    table_size = 2
+    batch_size = 512  # per device
+    n_prefetch = 1
     shard_axis_name = "devices"
     env_name = "Acrobot-v1"
 
     key = jax.random.key(1)
-    weights_key, policy_key, update_key = jax.random.split(key, 3)
+    weights_key, _policy_key, update_key = jax.random.split(key, 3)
 
     make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
@@ -85,19 +91,22 @@ def main(config):
     act_space = one_agent(env.action_space, num_agents)
     width = prefix(stepper.num_envs, num_agents)
     example_transition = example(rollout_len, width, env.observation_space, act_space)
-    traj_accumulator = TrajectoryAccumulator(example_transition)
+    _traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
     params = network.init(weights_key, env.observation_space.sample())
     # TODO(params):
-    #  Source on learner -> in learner code
-    #  Sink per actor -> in actor code
+    #  Sink on learner -> in learner code
+    #  Source per actor -> in actor code
     #  Mirror per actor node -> in actor code
     param_store = (
         # TODO: resources
         ray.remote(RayParamStore).options(**RayParamStore.RAY_OPTIONS).remote(ParamStore(VersionedParams(params, 0)))
     )
+
+    def make_sink():
+        return RayParamSink(param_store)
 
     # --- Actor ---
     # TODO(actor):
@@ -105,44 +114,52 @@ def main(config):
     #  inference server
     #  colocation
     #  healthcheck + restarting
-    actors = [
-        Actor(
-            actor_config,  # rollout len, num_envs, num actors, placement group??
-            make_stepper,
-            make_policy,
-            record,
-            PPOTrajectory,
-        )
-    ]
-    actor_futures = [actor.run() for actor in actors]
+    #  must come after learner as they need the IP
+    # actors = [
+    #     Actor(
+    #         actor_config,  # rollout len, num_envs, num actors, placement group??
+    #         make_stepper,
+    #         make_policy,
+    #         record,
+    #         PPOTrajectory,
+    #     )
+    # ]
+    # actor_futures = [actor.run() for actor in actors]
 
     # --- Learner ---
     # TODO(update):
-    #  optimiser all reduce
-    #  smap learning fn
-    #  mesh
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(mean_by_axis(shard_axis_name), optax.clip_by_global_norm(1.0), optax.adam(schedule))
     opt_state = opt.init(params)
 
     # TODO:
-    # policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
-    # roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len)
-    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
-    if not updater.isvalid():
+    # policy = LocalPolicy(jax.jit(actor_forward), param_source, _policy_key)
+    # roller = Roller(stepper, policy, _traj_accumulator, record, PPOTrajectory, rollout_len)
+    rule = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    if not rule.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
-    update_fn = jax.jit(jax.smap(updater.update, in_axes=(None, 0), out_axes=(None, 0), axis_name=shard_axis_name))
+    distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)  # TODO: fix typing around rule
 
-    echo_config = {}
+    # TODO: example returns a dict currently...
+    replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
+    recorder = ...  # TODO: distributed/logger.py
+
     # TODO(learner):
     #  placement
     #  colocation
-    #  might need to pass builders here
-    learner = RayLearner(update_fn, echo_config, param_store, checkpointer, logger)
-    learner_future = learner.run()
+    #  ray.remote...
+    trainer = Trainer(
+        num_updates,
+        update_state,
+        distributed_rule,
+        replay,
+        make_sink,
+        recorder,
+    )
+    trainer_future = trainer.run()
 
-    ray.wait([learner_future] + actor_futures)
+    ray.wait([trainer_future] + actor_futures)
 
     # TODO(other):
     #  echo
