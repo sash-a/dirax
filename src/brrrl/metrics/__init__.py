@@ -1,22 +1,20 @@
-from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, Origin
-from brrrl.metrics.logger import Logger, MultiLogger, NamespacedProcessor, WindowedProcessor
+from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, MetricRecorder, Origin, WindowedRecorder
+from brrrl.metrics.logger import Logger, NamespacedProcessor
 
 
-def default_local_logger(*loggers: Logger, log_every: int) -> tuple[LocalMetricRecorder, LocalMetricRecorder]:
+def default_logger(logger: Logger, every_records: int) -> tuple[MetricRecorder, MetricRecorder]:
+    """The one-process chain: a window per Origin, in front of the collector that clocks them both.
 
-    backend = MultiLogger(list(loggers))
-    logger = WindowedProcessor(backend, log_every)
-    metric_collector = MetricCollector(
+    Shaped like `brrrl.distributed.components.metrics.default_remote_logger`, and differing only in
+    which recorder the window wraps, so moving a run onto a cluster does not move where it folds.
+    """
+    collector = MetricCollector(
         {
             Origin.ACTOR: NamespacedProcessor("actor", logger),
             Origin.LEARNER: NamespacedProcessor("learner", logger),
         }
     )
-    actor_recorder = LocalMetricRecorder(metric_collector, Origin.ACTOR)
-    learner_recorder = LocalMetricRecorder(metric_collector, Origin.LEARNER)
+    actor = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records)
+    learner = WindowedRecorder(LocalMetricRecorder(collector, Origin.LEARNER), every_records)
 
-    return actor_recorder, learner_recorder
-
-
-# TODO: move this to distributed and do it there
-def default_remote_logger(*loggers: Logger, log_every: int): ...
+    return actor, learner

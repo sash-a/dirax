@@ -117,7 +117,7 @@ class ReplayServer[T: Trajectory]:
         transport_threads: the number of threads used to place incoming data from actors onto an intermediate queue.
         drainer_threads: the number of threads to drain the intermediate queue into the buffer.
         intermediate_queue_size: the size of the queue where data waits before it is placed into the buffer.
-        port: communication port used for TCP.
+        port: communication port used for TCP. Set to ``None`` to let OS select the port.
     """
 
     table_size: int
@@ -128,16 +128,21 @@ class ReplayServer[T: Trajectory]:
     transport_threads: int = 8
     drainer_threads: int = 8
     intermediate_queue_size: int = 4
-    port: int = 0
+    port: list[int] | None = None
 
     def servers(self, device_count: int) -> list[Server]:
         """Create ``device_count`` echo servers. Each server emits a batch of size ``per_device_batch_size``."""
+        ports = self.port if self.port else [0] * device_count
+        if len(ports) != device_count:
+            exc = f"Provided ports must be the same length as device count or None. Got {len(ports)=}, {device_count=}"
+            raise ValueError(exc)
+
         servers: list[Server] = []
-        for i in range(self.device_count):
+        for i in range(device_count):
             server = Server(
                 example=echo_example(self.example),
                 batch_size=self.per_device_batch_size,
-                transport=TcpTransport(port=self.port + i, num_threads=self.transport_threads),
+                transport=TcpTransport(port=ports[i], num_threads=self.transport_threads),
                 num_buffers=max(2, int(self.table_size) + 1),
                 num_drainers=self.drainer_threads,
                 producer_queue_size=self.intermediate_queue_size,

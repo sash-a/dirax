@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import ClassVar, Literal, overload
 
+import ray
 from ray.actor import ActorHandle
 
 from brrrl.distributed.placement.component import Behaviour
@@ -31,8 +32,9 @@ class RayParamStore:
 class RayParamSink:
     store: ActorHandle[RayParamStore]
 
+    # TODO: this doesn't return an int, but rather a ref...
     def publish(self, params: Params) -> int:
-        raise NotImplementedError
+        return self.store.publish.remote(params)
 
 
 @dataclass
@@ -44,4 +46,5 @@ class RayParamSource:
     @overload
     def get(self, block: Literal[False]) -> VersionedParams | None: ...
     def get(self, block: bool) -> VersionedParams | None:
-        raise NotImplementedError
+        # TODO: correct block semantics/prefetching
+        return ray.get(self.store.get.remote(block))

@@ -2,22 +2,32 @@ from functools import partial
 from typing import Any, cast
 
 import distrax
+import echo
 import flax.linen as nn
 import gymnasium as gym
 import jax
+import jax.numpy as jnp
 import numpy as np
 import optax
 import ray
+from chex import PRNGKey
 from echo import TrajectoryAccumulator
 from gymnasium.wrappers.vector import NormalizeReward
+from ray import ObjectRef
+from ray.actor import ActorProxy
 
 from brrrl.acting.env_stepper import LoopedStepper, prefix
-from brrrl.algorithms.ppo.ppo import PPOUpdateRule
+from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.roller import Roller
+from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule
 from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
-from brrrl.distributed.components.echo import ReplayServer
-from brrrl.distributed.components.params import RayParamSink, RayParamStore
+from brrrl.distributed.components.actor import Actor
+from brrrl.distributed.components.echo import ReplayServer, echo_example
+from brrrl.distributed.components.metrics import default_remote_logger
+from brrrl.distributed.components.params import RayParamSink, RayParamSource, RayParamStore
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
+from brrrl.metrics.stdout import StdoutLogger
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
@@ -67,9 +77,31 @@ def record(obs, term, trunc, reward, policy_output: PPOPolicyOutput):
     return PPOTransition(obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob)
 
 
+def close(
+    actors: list[ActorProxy[Any]],
+    actor_futures: list[ObjectRef],
+    trainer: ActorProxy[Any],
+    collector: ActorProxy[Any],
+    timeout: float = 60,
+) -> None:
+    """Unwind outwards from what blocks: the Actors, then the servers they send to, then the collector.
+
+    Raises:
+        TimeoutError: An Actor was still running ``timeout`` seconds after being asked to close.
+    """
+    ray.get([actor.close.remote() for actor in actors])
+    stopped, running = ray.wait(actor_futures, num_returns=len(actor_futures), timeout=timeout)
+    ray.get(trainer.close.remote())
+    ray.get(collector.close.remote())
+    ray.get(stopped)  # An Actor that died mid-run is a real error, not a quiet one.
+    if running:
+        raise TimeoutError(f"{len(running)}/{len(actors)} actors still running {timeout:g}s after close")
+
+
 def main(config):
     rollout_len = 128
-    num_envs = 8
+    num_envs = 1
+    num_actors = 8
     num_agents = 1
     num_updates = 5000
     num_epochs = 2
@@ -77,21 +109,20 @@ def main(config):
     gamma = 0.99
     learning_rate = 3e-4
     table_size = 2
-    batch_size = 512  # per device
+    batch_size = 4  # number of rollouts per device
     n_prefetch = 1
     shard_axis_name = "devices"
     env_name = "Acrobot-v1"
 
+    ray.init()
     key = jax.random.key(1)
-    weights_key, _policy_key, update_key = jax.random.split(key, 3)
+    weights_key, policy_key, update_key = jax.random.split(key, 3)
 
     make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
-    stepper = LoopedStepper([make_env], wrap=partial(NormalizeReward, gamma=gamma))
     act_space = one_agent(env.action_space, num_agents)
-    width = prefix(stepper.num_envs, num_agents)
+    width = prefix(num_envs, num_agents)
     example_transition = example(rollout_len, width, env.observation_space, act_space)
-    _traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
@@ -108,34 +139,17 @@ def main(config):
     def make_sink():
         return RayParamSink(param_store)
 
-    # --- Actor ---
-    # TODO(actor):
-    #  placement
-    #  inference server
-    #  colocation
-    #  healthcheck + restarting
-    #  must come after learner as they need the IP
-    # actors = [
-    #     Actor(
-    #         actor_config,  # rollout len, num_envs, num actors, placement group??
-    #         make_stepper,
-    #         make_policy,
-    #         record,
-    #         PPOTrajectory,
-    #     )
-    # ]
-    # actor_futures = [actor.run() for actor in actors]
-
     # --- Learner ---
-    # TODO(update):
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
-    opt = optax.chain(mean_by_axis(shard_axis_name), optax.clip_by_global_norm(1.0), optax.adam(schedule))
+    opt = optax.chain(
+        mean_by_axis(shard_axis_name),
+        optax.clip_by_global_norm(MAX_GRAD_NORM),
+        optax.adam(schedule, eps=ADAM_EPS),
+    )
     opt_state = opt.init(params)
 
-    # TODO:
-    # policy = LocalPolicy(jax.jit(actor_forward), param_source, _policy_key)
-    # roller = Roller(stepper, policy, _traj_accumulator, record, PPOTrajectory, rollout_len)
-    rule = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    # A device's batch is every env of every rollout echo stacked for it, merged by `batch_major`.
+    rule = PPOUpdateRule(apply_fn, opt, batch_size * num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not rule.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
@@ -143,25 +157,69 @@ def main(config):
 
     # TODO: example returns a dict currently...
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
-    recorder = ...  # TODO: distributed/logger.py
+    actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, every_records=20)
 
     # TODO(learner):
-    #  placement
+    #  placement (builtin stuff + placement group)
     #  colocation
-    #  ray.remote...
-    trainer = Trainer(
-        num_updates,
-        update_state,
-        distributed_rule,
-        replay,
-        make_sink,
-        recorder,
+    trainer = (
+        ray.remote(Trainer)
+        .options(num_cpus=4, num_gpus=1, **Trainer.RAY_OPTIONS)
+        .remote(
+            num_updates,
+            update_state,
+            distributed_rule,
+            replay,
+            make_sink,
+            learner_recorder,
+        )
     )
-    trainer_future = trainer.run()
+    replay_addrs = ray.get(trainer.get_replay_addresses.remote())
 
-    ray.wait([trainer_future] + actor_futures)
+    # --- Actor ---
+    # TODO(actor):
+    #  inference server
+    #  healthcheck + restarting (actor group)
+    def actor_forward(params, observations, key):
+        distr, value = apply_fn(params, observations)
+        action = distr.sample(seed=key)
+        logp = jnp.asarray(distr.log_prob(action))
+        return PPOPolicyOutput(action, logp, value)
+
+    def make_roller(key: PRNGKey) -> Roller:
+        iinfo = jnp.iinfo(jnp.int32)
+        seed = jax.device_get(jax.random.randint(key, (), iinfo.min, iinfo.max, jnp.int32)).item()
+        # TODO: this needs a mirror per actor and needs to ref the mirror
+        param_source = RayParamSource(param_store)
+        traj_accumulator = TrajectoryAccumulator(example_transition)
+        policy = LocalPolicy(jax.jit(actor_forward), param_source, key)
+        # TODO: how to seed the stepper/env
+        stepper = LoopedStepper([make_env for _ in range(num_envs)], wrap=partial(NormalizeReward, gamma=gamma))
+        return Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
+
+    def make_replay_client(i: int) -> echo.TcpClient:
+        replay_addr = replay_addrs[i % len(replay_addrs)]
+        host, port = replay_addr.split(":")
+        return echo.TcpClient(host, int(port), echo_example(PPOTrajectory(**example_transition)), max_inflight_msgs=2)
+
+    policy_keys = jax.random.split(policy_key, num_actors)
+    actors = [
+        ray.remote(Actor)
+        .options(num_cpus=1, num_gpus=0, **Actor.RAY_OPTIONS)
+        .remote(
+            partial(make_roller, policy_keys[i]),
+            partial(make_replay_client, i),
+            actor_recorder,
+        )
+        for i in range(num_actors)
+    ]
+    actor_futures = [actor.run.remote() for actor in actors]
+    try:
+        ray.get(trainer.run.remote())
+        close(actors, actor_futures, trainer, collector)
+    finally:
+        ray.shutdown()
 
     # TODO(other):
-    #  echo
     #  checkpointing
-    #  logging
+    #  eval

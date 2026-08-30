@@ -37,6 +37,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         record: RecordFn[Obs, O],
         trajectory: type[T],
         num_steps: int,
+        seed: int,
     ) -> None:
         """The shape every field leads with comes off the stepper, which is what knows it: ``(E, A)``
         for a team and ``(E,)`` for a single agent, which has no agent axis at all. This is the only
@@ -48,7 +49,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         self.trajectory = trajectory
         self.num_steps = num_steps
         self.width = (stepper.num_envs, stepper.num_agents) if stepper.num_agents > 1 else (stepper.num_envs,)
-        self.prev_obs, _ = stepper.reset()
+        self.prev_obs, _ = stepper.reset(seed=seed)
         self.prev_term = np.zeros(self.width, np.bool_)
         self.prev_trunc = np.zeros(self.width, np.bool_)
 
@@ -58,6 +59,11 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         many agents took it, so this does not multiply by the agent count. The trailing slot is never
         stepped, so it is not one of them."""
         return self.num_steps * self.stepper.num_envs
+
+    def close(self) -> None:
+        """Releases the environments. The Roller built none of them, but it is the only thing that
+        holds the stepper, so it is the only place a caller can reach them from."""
+        self.stepper.close()
 
     def rollout(self) -> tuple[Rollout[T], Metrics]:
         infos, versions = [], []

@@ -8,7 +8,8 @@ never a step, which is what makes a local recorder and one across a cluster inte
 from conftest import RecordingLogger
 from etils import epath
 
-from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, Origin
+from brrrl.metrics import default_logger
+from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, Origin, WindowedRecorder
 from brrrl.metrics.logger import NamespacedProcessor
 
 
@@ -92,3 +93,138 @@ def test_an_origin_is_the_namespace_a_chain_is_built_with(backend: RecordingLogg
     collector.collect(Origin.EVAL, {"return": 1.0})
 
     assert backend.records == [({"eval/return": 1.0}, 0)]
+
+
+def test_the_first_record_lands_immediately(backend: RecordingLogger) -> None:
+    """A run that showed nothing until its first window closed would be indistinguishable from a
+    run that had hung, and the first window is the longest wait of the run."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+
+    WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=1000).record({"return": 1.0})
+
+    assert backend.records == [({"return/mean": 1.0}, 0)]
+
+
+def test_records_inside_a_window_are_held_and_emitted_once_it_closes(backend: RecordingLogger) -> None:
+    """The point of the whole recorder: one series point per window, whatever the act rate is."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=3)
+    windowed.record({"return": 0.0})
+
+    windowed.record({"return": 2.0})
+    windowed.record({"return": 6.0})
+
+    assert len(backend.records) == 1
+
+    windowed.record({"return": 4.0})
+
+    assert backend.records[1:] == [({"return/mean": 4.0}, 0)]
+
+
+def test_a_window_carries_the_transitions_it_spanned_so_the_clock_stays_exact(backend: RecordingLogger) -> None:
+    """Folding before the clock must not lose the count the clock is made of, or an x-axis would
+    read differently depending on which side of the seam a run happened to fold on."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=3)
+
+    for _ in range(7):
+        windowed.record({"return": 1.0}, 128)
+    windowed.flush()
+
+    assert collector.steps == 7 * 128
+
+
+def test_a_learner_reporting_no_transitions_still_comes_round(backend: RecordingLogger) -> None:
+    """Records rather than transitions are the window's unit for exactly this: a Trainer produces
+    none, and a window counting them would hold its metrics for the whole run."""
+    collector = MetricCollector({Origin.LEARNER: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.LEARNER), every_records=2)
+    windowed.record({"loss": 4.0})
+
+    windowed.record({"loss": 1.0})
+    windowed.record({"loss": 3.0})
+
+    assert backend.records[1:] == [({"loss/mean": 2.0}, 0)]
+
+
+def test_the_summary_is_keyed_by_metric_and_statistic(backend: RecordingLogger) -> None:
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=10, verbose=True)
+
+    windowed.record({"return": [1.0, 3.0]})
+
+    assert backend.records == [({"return/mean": 2.0, "return/std": 1.0, "return/min": 1.0, "return/max": 3.0}, 0)]
+
+
+def test_a_flush_empties_the_accumulators_so_the_next_window_is_its_own(backend: RecordingLogger) -> None:
+    """Otherwise every window is the whole run to date, and a series flattens as a run goes on."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=2)
+    windowed.record({"return": 100.0})
+
+    windowed.record({"loss": 1.0})
+    windowed.record({"loss": 3.0})
+
+    assert backend.keys == [["return/mean"], ["loss/mean"]]
+    assert backend.records[1] == ({"loss/mean": 2.0}, 0)
+
+
+def test_closing_flushes_the_partial_window(backend: RecordingLogger) -> None:
+    """A run's last window is almost never full, and its metrics are the ones being reported."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=10)
+    windowed.record({"return": 0.0})
+    windowed.record({"return": 8.0}, 6)
+
+    windowed.close()
+
+    assert backend.records[1:] == [({"return/mean": 8.0}, 6)]
+    assert backend.closes == 1
+
+
+def test_closing_with_nothing_pending_logs_nothing(backend: RecordingLogger) -> None:
+    """An empty record at the end of a run would read as a metric that had collapsed to zero."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=10)
+    windowed.record({"return": 1.0})
+
+    windowed.close()
+
+    assert len(backend.records) == 1
+    assert backend.closes == 1
+
+
+def test_closing_twice_flushes_once_and_reaches_the_backend_twice(backend: RecordingLogger) -> None:
+    """Chains share a backend, so ``close`` is reached once per chain; it is the backend's own
+    ``close`` that has to be idempotent, and a window must not invent a second flush."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=10)
+    windowed.record({"return": 1.0})
+    windowed.record({"return": 5.0}, 3)
+
+    windowed.close()
+    windowed.close()
+
+    assert backend.steps == [0, 3]
+    assert backend.closes == 2
+
+
+def test_artifacts_skip_the_window(backend: RecordingLogger) -> None:
+    """An Artifact names a place rather than a moment, so there is nothing to fold and nothing to
+    wait for: a checkpoint held back until the window closed could outlive the process."""
+    collector = MetricCollector({Origin.ACTOR: backend})
+    windowed = WindowedRecorder(LocalMetricRecorder(collector, Origin.ACTOR), every_records=1000)
+
+    windowed.record_artifact(epath.Path("/run/ckpt"), "checkpoints")
+
+    assert backend.artifacts == [(epath.Path("/run/ckpt"), "checkpoints")]
+
+
+def test_a_windowed_chain_names_the_origin_the_metric_and_the_statistic(backend: RecordingLogger) -> None:
+    """The window folds before the namespace rather than after it, and the series name someone reads
+    for the life of the project is the same either way round."""
+    actor, _ = default_logger(backend, every_records=10)
+
+    actor.record({"return": [1.0, 3.0]})
+
+    assert backend.records == [({"actor/return/mean": 2.0}, 0)]

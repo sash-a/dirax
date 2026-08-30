@@ -115,8 +115,8 @@ class Oracle:
     def num_envs(self) -> int:
         return self.env.num_envs
 
-    def reset(self) -> tuple[Any, dict[str, Any]]:
-        return self.env.reset()
+    def reset(self, *, seed: int | None = None) -> tuple[Any, dict[str, Any]]:
+        return self.env.reset(seed=seed)
 
     def step(self, action: Any) -> tuple[Any, NDArray, NDArray, NDArray, dict[str, Any]]:
         """Nothing is reshaped either way: an env with a single agent has no agent axis, so what
@@ -227,6 +227,7 @@ def build(
     stepper: EnvStepper[Any, ArrayLike] | None = None,
     source: ParamSource | None = None,
     leaves: int = 1,
+    seed: int = 0,
 ) -> Roller[Any, Output, Trajectory]:
     stepper = counters() if stepper is None else stepper
     store = ParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
@@ -237,6 +238,7 @@ def build(
         record=record,
         trajectory=Trajectory,
         num_steps=num_steps,
+        seed=seed,
     )
 
 

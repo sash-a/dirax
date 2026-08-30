@@ -15,7 +15,7 @@ from brrrl.distributed.components.actor import Actor
 from brrrl.distributed.components.checkpointer import CheckpointStore
 from brrrl.distributed.components.inference_server import InferenceServer, InferenceServerPolicy
 from brrrl.distributed.components.metrics import RayMetricCollector
-from brrrl.distributed.components.params import ParamStore, RayParamSink, RayParamSource
+from brrrl.distributed.components.params import RayParamSink, RayParamSource, RayParamStore
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.placement.component import Behaviour, Component
 from brrrl.params.params import ParamSink, ParamSource
@@ -24,11 +24,17 @@ COMPONENTS: tuple[type[Component], ...] = (
     Actor,
     CheckpointStore,
     InferenceServer,
-    ParamStore,
     RayMetricCollector,
+    RayParamStore,
     Trainer,
 )
 """Every class in the package Ray places. Typed, so `ty` rejects one that declares no behaviour."""
+
+COLLABORATORS = frozenset({"DataParallelUpdateRule", "DistributedUpdateRule", "ReplayServer"})
+"""The classes here Ray never places: a Protocol, and the plain objects a driver builds and hands
+to a Component's constructor. Named one at a time rather than inferred from a shape, because the
+point of the contract below is to force the decision — a class that simply forgot ``RAY_OPTIONS``
+must fail rather than fall into this category by resembling it."""
 
 
 def views(
@@ -43,13 +49,18 @@ def views(
     return source, sink, policy
 
 
-def test_every_class_is_either_a_component_or_a_view_of_one() -> None:
-    """The package holds placed Components and the handle-holding halves their clients use, and nothing else.
+def test_every_class_is_a_component_a_view_of_one_or_a_named_collaborator() -> None:
+    """The package holds placed Components, the handle-holding halves their clients use, and the
+    named collaborators a driver ships into one. Nothing else.
 
-    A new class that is neither has skipped the decision this contract exists to force: an empty
+    A new class outside all three has skipped the decision this contract exists to force: an empty
     ``RAY_OPTIONS`` is someone deciding Ray's defaults are right, a missing one is nobody deciding.
     """
-    undeclared = [cls.name for cls in classes() if behaviour_of(cls) is None and not holds_a_handle(cls)]
+    undeclared = [
+        cls.name
+        for cls in classes()
+        if behaviour_of(cls) is None and not holds_a_handle(cls) and cls.name not in COLLABORATORS
+    ]
 
     assert undeclared == []
 
@@ -92,5 +103,9 @@ def keys_of(behaviour: ast.expr | None) -> list[str]:
 
 
 def holds_a_handle(cls: ast.ClassDef) -> bool:
-    """A client half: it carries a reference to a Component rather than being one."""
-    return "ActorHandle" in {ast.unparse(node.annotation) for node in cls.body if isinstance(node, ast.AnnAssign)}
+    """A client half: it carries a reference to a Component rather than being one.
+
+    Matched inside the annotation rather than against the whole of it, so naming which Component the
+    handle points at stays a free choice rather than dropping the class out of the category.
+    """
+    return any("ActorHandle" in ast.unparse(node.annotation) for node in cls.body if isinstance(node, ast.AnnAssign))

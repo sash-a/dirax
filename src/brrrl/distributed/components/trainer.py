@@ -3,6 +3,7 @@ from typing import ClassVar
 
 import jax
 import numpy as np
+import ray
 
 from brrrl.distributed.components.echo import ReplayServer
 from brrrl.distributed.components.update_rule import DistributedUpdateRule
@@ -30,7 +31,6 @@ class Trainer[S: UpdateState, T: Trajectory]:
         metric_recorder: MetricRecorder,
     ):
         self.num_updates = num_updates
-        self.rule = rule
 
         self.param_sink = make_param_sink()
         self.param_sink.publish(state.params)
@@ -38,8 +38,8 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self.metric_recorder = metric_recorder
         self.timer = Timer(AggregatedElapsed)
 
-        model_sharding, data_sharding = rule.shardings()
-        self.update_fn = rule.compiled(model_sharding, data_sharding)
+        mesh, model_sharding, data_sharding = rule.shardings()
+        self.update_fn = rule.compiled(mesh, model_sharding, data_sharding)
 
         self.replay_servers = replay.servers(len(data_sharding.device_set))
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
@@ -53,7 +53,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
                 trajectory, roller_version, replay_metrics = next(self.dataset)
 
             with self.timer("update_dispatch_time"):
-                self.state, learn_metrics = self.rule.update(self.state, trajectory)
+                self.state, learn_metrics = self.update_fn(self.state, trajectory)
 
             # TODO: ideally we overlap this publish with the update.
             # To do this we'd need to publish the previous params
@@ -68,3 +68,19 @@ class Trainer[S: UpdateState, T: Trajectory]:
             versions = {"staleness": np.mean(trainer_version - roller_version)}
             # TODO: check if windowed metric recording will handle lists and scalars
             self.metric_recorder.record({**replay_metrics, **learn_metrics, **versions, **self.timer.dump()})
+
+    def close(self) -> None:
+        """Stops the replay servers and flushes what the metric window still holds.
+
+        Called once every Actor has stopped, never before: the servers' drainer threads are what
+        acknowledge an Actor's in-flight sends, and an Actor blocked in ``send`` is waiting on an
+        acknowledgement rather than on anything it can be told to abandon.
+        """
+        for server in self.replay_servers:
+            server.close()
+        self.metric_recorder.close()
+
+    def get_replay_addresses(self) -> list[str]:
+        """Returns one address per echo server."""
+        ip = ray.util.get_node_ip_address()
+        return [f"{ip}:{server.port}" for server in self.replay_servers]

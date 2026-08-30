@@ -182,6 +182,16 @@ def rule(network: nn.Module) -> PPOUpdateRule:
     return rule_over(network)
 
 
+def stacked(trajectory: PPOTrajectory) -> PPOTrajectory:
+    """``acted`` as a batch of rollouts reaches ``update``: one env per rollout.
+
+    ``acted`` builds the ``(batch, time, ...)`` the update works in and every property here reads,
+    which is one merge short of what an update is handed. Widening it back is what lets both live in
+    one fixture: `brrrl.algorithms.ppo.ppo.batch_major` collapses this env axis straight back out.
+    """
+    return jax.tree.map(lambda leaf: leaf[:, :, None], trajectory)
+
+
 @pytest.fixture
 def trajectory(space: Space, network: nn.Module, params) -> PPOTrajectory:
     return acted(space, network, params)
@@ -204,7 +214,7 @@ def test_the_ratio_is_one_at_the_behaviour_policy(rule: PPOUpdateRule, state, tr
 
 def test_a_final_obs_slot_cannot_move_any_metric(rule: PPOUpdateRule, state, trajectory, space: Space) -> None:
     """Its action and reward are the meaningless half of the slot; only its observation counts."""
-    _, clean = rule.update(state, trajectory)
+    _, clean = rule.update(state, stacked(trajectory))
 
     transitions = trajectory.transitions
     final = transitions.terminated | transitions.truncated
@@ -217,7 +227,7 @@ def test_a_final_obs_slot_cannot_move_any_metric(rule: PPOUpdateRule, state, tra
             log_prob=np.where(final, np.float32(-1e3), transitions.log_prob),
         )
     )
-    _, garbage = rule.update(state, fouled)
+    _, garbage = rule.update(state, stacked(fouled))
 
     assert all(np.isclose(clean[key], garbage[key], atol=1e-5) for key in clean), {
         key: (float(np.asarray(clean[key])), float(np.asarray(garbage[key])))
@@ -227,7 +237,7 @@ def test_a_final_obs_slot_cannot_move_any_metric(rule: PPOUpdateRule, state, tra
 
 
 def test_update_advances_the_state_it_was_given(rule: PPOUpdateRule, state, trajectory) -> None:
-    updated, _ = rule.update(state, trajectory)
+    updated, _ = rule.update(state, stacked(trajectory))
 
     assert jax.tree.structure(updated.params) == jax.tree.structure(state.params)
     assert not jax.tree.all(jax.tree.map(jnp.allclose, state.params, updated.params))
@@ -236,7 +246,7 @@ def test_update_advances_the_state_it_was_given(rule: PPOUpdateRule, state, traj
 
 def test_metrics_are_scalars_the_collector_can_take(rule: PPOUpdateRule, state, trajectory) -> None:
     """A Metric recorder takes ``Mapping[str, ArrayLike]``; a per-minibatch axis would leak out here."""
-    _, metrics = rule.update(state, trajectory)
+    _, metrics = rule.update(state, stacked(trajectory))
 
     assert set(metrics) == {
         "total_loss",
@@ -265,7 +275,7 @@ def test_repeated_updates_descend(rule: PPOUpdateRule, state, trajectory) -> Non
     """The loop has to actually optimise, not merely run."""
     first = last = None
     for _ in range(8):
-        state, metrics = rule.update(state, trajectory)
+        state, metrics = rule.update(state, stacked(trajectory))
         first = metrics["value_loss"] if first is None else first
         last = metrics["value_loss"]
 
@@ -299,7 +309,7 @@ def test_the_update_brackets_its_own_walk_from_the_behaviour_policy(rule: PPOUpd
     """The first minibatch is the only one taken before any step has moved the params, so its KL is
     zero outright rather than merely small. What the last one reads is the drift the whole point of
     ``num_epochs`` is to trade against, and a mean over every minibatch shows neither."""
-    _, metrics = rule.update(state, trajectory)
+    _, metrics = rule.update(state, stacked(trajectory))
 
     assert np.isclose(metrics["approx_kl_first_minibatch"], 0.0, atol=1e-6)
     assert np.asarray(metrics["approx_kl_last_minibatch"]) > 0
@@ -307,7 +317,7 @@ def test_the_update_brackets_its_own_walk_from_the_behaviour_policy(rule: PPOUpd
 
 def test_mask_fraction_counts_the_slots_the_loss_is_allowed(rule: PPOUpdateRule, state, trajectory) -> None:
     """One termination and one truncation, both inside the sliced batch."""
-    _, metrics = rule.update(state, trajectory)
+    _, metrics = rule.update(state, stacked(trajectory))
 
     assert np.isclose(metrics["mask_fraction"], (BATCH * ROLLOUT - 2) / (BATCH * ROLLOUT))
 
@@ -315,7 +325,7 @@ def test_mask_fraction_counts_the_slots_the_loss_is_allowed(rule: PPOUpdateRule,
 def test_each_clip_epsilon_bounds_only_its_own_term(rule: PPOUpdateRule, state, trajectory) -> None:
     """One bounds a dimensionless ratio, the other a drift in return units. Sharing one epsilon ties
     how hard the critic is clipped to whatever scale the environment's rewards happen to have."""
-    moved, _ = rule.update(state, trajectory)
+    moved, _ = rule.update(state, stacked(trajectory))
     batch = PPOBatch(*from_trajectory(rule, trajectory))
 
     _, tight = replace(rule, value_clip_eps=1e-8).loss(moved.params, batch)
@@ -337,9 +347,9 @@ def test_the_value_clip_cannot_bind_at_the_behaviour_critic(rule: PPOUpdateRule,
 def test_the_step_taken_is_reported_beside_the_gradient_that_asked_for_it(rule, state, trajectory) -> None:
     """Adam rescales per parameter, so what moved the weights is not the learning rate times the
     gradient, and only the step's own norm says how far they actually travelled."""
-    _, slow = rule.update(state, trajectory)
+    _, slow = rule.update(state, stacked(trajectory))
     quick = replace(rule, optimizer=optax.adam(1e-1))
-    _, fast = quick.update(state._replace(opt_state=quick.optimizer.init(state.params)), trajectory)
+    _, fast = quick.update(state._replace(opt_state=quick.optimizer.init(state.params)), stacked(trajectory))
 
     assert slow["grad_norm"] > 0 and slow["param_norm"] > 0
     assert fast["update_norm"] > slow["update_norm"]
