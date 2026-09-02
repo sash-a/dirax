@@ -98,7 +98,7 @@ def close(
         raise TimeoutError(f"{len(running)}/{len(actors)} actors still running {timeout:g}s after close")
 
 
-def main(config):
+def main():
     rollout_len = 128
     num_envs = 1
     num_actors = 8
@@ -126,13 +126,13 @@ def main(config):
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
+    # TODO: this should probably be done in learner, e.g for a very big model the head node may not have enough RAM
     params = network.init(weights_key, env.observation_space.sample())
+
     # TODO(params):
-    #  Sink on learner -> in learner code
-    #  Source per actor -> in actor code
     #  Mirror per actor node -> in actor code
+    #  Resources
     param_store = (
-        # TODO: resources
         ray.remote(RayParamStore).options(**RayParamStore.RAY_OPTIONS).remote(ParamStore(VersionedParams(params, 0)))
     )
 
@@ -140,6 +140,9 @@ def main(config):
         return RayParamSink(param_store)
 
     # --- Learner ---
+    # TODO(learner):
+    #  placement (builtin stuff + placement group)
+    #  colocation
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(
         mean_by_axis(shard_axis_name),
@@ -148,20 +151,15 @@ def main(config):
     )
     opt_state = opt.init(params)
 
-    # A device's batch is every env of every rollout echo stacked for it, merged by `batch_major`.
     rule = PPOUpdateRule(apply_fn, opt, batch_size * num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not rule.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
     distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)  # TODO: fix typing around rule
 
-    # TODO: example returns a dict currently...
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
     actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, every_records=20)
 
-    # TODO(learner):
-    #  placement (builtin stuff + placement group)
-    #  colocation
     trainer = (
         ray.remote(Trainer)
         .options(num_cpus=4, num_gpus=1, **Trainer.RAY_OPTIONS)
@@ -216,10 +214,16 @@ def main(config):
     actor_futures = [actor.run.remote() for actor in actors]
     try:
         ray.get(trainer.run.remote())
-        close(actors, actor_futures, trainer, collector)
     finally:
-        ray.shutdown()
+        try:
+            close(actors, actor_futures, trainer, collector)
+        finally:
+            ray.shutdown()
 
     # TODO(other):
     #  checkpointing
     #  eval
+
+
+if __name__ == "__main__":
+    main()

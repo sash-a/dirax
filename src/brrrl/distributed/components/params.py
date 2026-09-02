@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Literal, overload
 
 import ray
@@ -30,11 +30,22 @@ class RayParamStore:
 
 @dataclass
 class RayParamSink:
-    store: ActorHandle[RayParamStore]
+    """The writer into the ``RayParamStore``
 
-    # TODO: this doesn't return an int, but rather a ref...
+    Duplicated the version that lives in the store that we don't need to wait for a round trip to
+    return the version when sending params.
+    """
+
+    store: ActorHandle[RayParamStore]
+    version: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.version = ray.get(self.store.get.remote(True)).version
+
     def publish(self, params: Params) -> int:
-        return self.store.publish.remote(params)
+        self.store.publish.remote(params)
+        self.version += 1
+        return self.version
 
 
 @dataclass
