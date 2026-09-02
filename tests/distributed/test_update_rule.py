@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
+from conftest import replicated
 from jax.sharding import Mesh, PartitionSpec
 from numpy.typing import ArrayLike
 
@@ -32,14 +33,19 @@ from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.types import Metrics, Params, UpdateFn
 from brrrl.utils.optax import mean_by_axis
 
-WEIGHT = "w"
-"""The one parameter. `Params` is a nest of mappings to the type system, so `weight` is what reads
-it back as the single number it is here."""
+COLLECTION, WEIGHT = "params", "w"
+"""Flax nests every parameter under the collection it belongs to, and so does `Params`. `weight`
+is what reads the one leaf back out as the single number it is here."""
 
 AXIS = "devices"
 LEARNING_RATE = 0.1
 ROWS = 8
 """Rows in a batch. Divisible by any device count the suite runs on, so a shard is a whole number."""
+
+AWKWARD = (3, 5)
+"""A parameter shape owing the mesh nothing — three rows, and never three devices. What a layer
+needs is not a multiple of the cards it lands on, which is the whole reason a model is replicated
+rather than split."""
 
 
 class State(NamedTuple):
@@ -59,7 +65,8 @@ class Squares:
     optimizer: optax.GradientTransformation
 
     def update(self, state: State, batch: jax.Array) -> tuple[State, Metrics]:
-        grads = jax.grad(lambda params: jnp.mean(jnp.square(batch * params[WEIGHT])))(state.params)
+        loss = lambda params: jnp.mean(jnp.square(batch * params[COLLECTION][WEIGHT]))
+        grads = jax.grad(loss)(state.params)
         updates, opt_state = self.optimizer.update(grads, state.opt_state, state.params)
         params = cast(Params, optax.apply_updates(state.params, updates))
         return State(params, opt_state), {"rows": jnp.float32(batch.shape[0]), "leading_row": batch[0]}
@@ -79,7 +86,7 @@ def rule(all_reduce: bool = True) -> DataParallelUpdateRule[State, Any]:
 
 
 def start(all_reduce: bool = True) -> State:
-    params: Params = {WEIGHT: jnp.float32(1.0)}
+    params: Params = {COLLECTION: {WEIGHT: jnp.float32(1.0)}}
     return State(params, optimizer(all_reduce).init(params))
 
 
@@ -89,12 +96,18 @@ def number(value: ArrayLike) -> float:
 
 
 def weight(state: State) -> jax.Array:
-    return cast(jax.Array, state.params[WEIGHT])
+    return cast(jax.Array, state.params[COLLECTION][WEIGHT])
 
 
 def batch() -> jax.Array:
     """Every row a different number, so which rows a shard was handed is readable off a metric."""
     return jnp.arange(ROWS, dtype=jnp.float32)
+
+
+def parameters() -> list[jax.Array]:
+    """A rank-0 parameter and a rank-2 one: the range a model sharding is asked to take, and neither
+    of them a shape the mesh had any say in."""
+    return [jnp.float32(1.0), jnp.arange(int(np.prod(AWKWARD)), dtype=jnp.float32).reshape(AWKWARD)]
 
 
 def over(devices: list[jax.Device]) -> tuple[Mesh, jax.NamedSharding, jax.NamedSharding]:
@@ -193,13 +206,45 @@ def test_without_the_axis_mean_the_gradient_arrives_multiplied_by_the_device_cou
 
 
 def test_every_device_ends_the_update_holding_the_same_parameters(devices: list[jax.Device]) -> None:
-    """Replicated is a claim about the values, not only about the sharding they are labelled with.
-    Replicas that had drifted would make every actor's parameters depend on which shard answered."""
+    """Replicated is a claim about the values on each device, not only about the sharding they are
+    labelled with. Replicas that had drifted would make every actor's parameters depend on which
+    shard answered."""
     state, _ = updated(rule().shardings())
 
-    shards = [np.asarray(shard.data) for shard in weight(state).addressable_shards]
-    assert weight(state).sharding.is_fully_replicated
-    assert shards == [shards[0]] * len(devices)
+    assert replicated(state.params, over=len(devices))
+
+
+def test_the_model_sharding_puts_a_whole_copy_of_a_parameter_on_every_device(
+    devices: list[jax.Device],
+) -> None:
+    """Whether `Trainer`'s ``device_put`` against this sharding replicates, which was an open
+    question: it does, for any shape, because `PartitionSpec()` names no axis to cut along.
+
+    Asserted by how many devices hold a copy and how much each holds, never by
+    ``is_fully_replicated`` — that is True of a `SingleDeviceSharding` too, so a parameter still
+    sitting where it was built passes it and a state that was never placed reads as replicated.
+    """
+    _, model, _ = rule().shardings()
+
+    for value in parameters():
+        placed = jax.device_put(value, model)
+        assert len(placed.addressable_shards) == len(devices)
+        assert [shard.data.shape for shard in placed.addressable_shards] == [value.shape] * len(devices)
+
+
+def test_no_parameter_would_have_fitted_the_data_sharding_instead(devices: list[jax.Device]) -> None:
+    """Why the model and the data get separate shardings rather than one applied to both. A batch
+    leads with an axis sized by the run and a parameter leads with whatever its layer needed, so the
+    spec that splits a batch cannot take either of these: rank-0 has no axis at all, and three rows
+    do not divide by two devices."""
+    if len(devices) == 1:
+        pytest.skip("a mesh of one splits anything divisible by one, which is every batch there is")
+
+    _, _, data = rule().shardings()
+
+    for value in parameters():
+        with pytest.raises(ValueError):
+            jax.device_put(value, data)
 
 
 def test_the_compiled_update_runs_on_a_thread_that_was_never_given_a_mesh(devices: list[jax.Device]) -> None:

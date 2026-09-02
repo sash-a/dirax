@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from conftest import Recorded
+from conftest import Recorded, replicated
 
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
@@ -52,9 +52,18 @@ DEPTH = [11, 22, 33]
 
 TIMED = {"traj_wait_time", "update_dispatch_time", "param_publish_time", "checkpointing_time"}
 PORT = 40000
+COLLECTION = "params"
+"""Flax nests every parameter under the collection it belongs to, and so does `Params`."""
+
 SEEN = "seen"
-"""The one parameter. `Params` is a nest of mappings to the type system, so `folded` reads it back
-as the single number the rule below keeps in it."""
+"""The parameter the rule folds each batch into. `Params` is a nest of mappings to the type system,
+so `folded` reads it back as the single number it is."""
+
+SHAPED = "shaped"
+AWKWARD = (3, 5)
+"""A second parameter, shaped the way a layer's would be and owing the mesh nothing — three rows,
+and never three devices. A state of scalars alone cannot tell replicating from failing to place at
+all, because a rank-0 leaf has no axis anyone could have split."""
 
 
 class State(NamedTuple):
@@ -69,7 +78,10 @@ class Decimals:
 
     def update(self, state: State, batch: jax.Array) -> tuple[State, Metrics]:
         mean = jax.lax.pmean(jnp.mean(batch), AXIS)
-        return State({SEEN: cast(jax.Array, state.params[SEEN]) * 10 + mean}), {"batch_mean": mean}
+        held = state.params[COLLECTION]
+        folded = cast(jax.Array, held[SEEN]) * 10 + mean
+        shaped = cast(jax.Array, held[SHAPED]) + mean
+        return State({COLLECTION: {SEEN: folded, SHAPED: shaped}}), {"batch_mean": mean}
 
     def isvalid(self) -> bool:
         return True
@@ -139,7 +151,7 @@ def build(feed: list[TrainerBatch[Any]] | None = None, window: int = 0) -> Wired
     ``window`` puts a real `WindowedRecorder` between the Trainer and where the records land, which
     is the chain a run builds; zero leaves the Trainer recording straight into it.
     """
-    params: Params = {SEEN: jnp.float32(0.0)}
+    params: Params = {COLLECTION: {SEEN: jnp.float32(0.0), SHAPED: jnp.zeros(AWKWARD, jnp.float32)}}
     store = ParamStore(VersionedParams(params, 0))
     replay = Scripted(batches() if feed is None else feed)
     collected = Recorded()
@@ -150,17 +162,7 @@ def build(feed: list[TrainerBatch[Any]] | None = None, window: int = 0) -> Wired
 
 
 def folded(params: Params) -> float:
-    return float(cast(jax.Array, params[SEEN]))
-
-
-def replicated(params: Params) -> bool:
-    """Fully replicated by its sharding, and holding the same values on every device it names."""
-    leaves: list[jax.Array] = jax.tree.leaves(params)
-    return all(leaf.sharding.is_fully_replicated for leaf in leaves) and all(
-        np.array_equal(shard.data, leaf.addressable_shards[0].data)
-        for leaf in leaves
-        for shard in leaf.addressable_shards
-    )
+    return float(cast(jax.Array, params[COLLECTION][SEEN]))
 
 
 def recorded(wired: Wired) -> list[dict[str, Any]]:
@@ -236,11 +238,12 @@ def test_a_learner_advances_no_step_of_its_own() -> None:
 
 def test_the_state_a_learner_starts_from_is_replicated_onto_every_device() -> None:
     """``device_put`` against a replicated `NamedSharding` is what puts a whole copy of the model on
-    each device, and the update is compiled expecting exactly that. A state that had been split
-    instead is a shape error at the first update, and one left on the host is a transfer per step."""
+    each device, and the update is compiled expecting exactly that. A state left where it was built
+    is a transfer per step, and it is the case worth naming: it reads as fully replicated to its own
+    sharding, so only the count of devices holding a copy tells the two apart."""
     wired = build()
 
-    assert replicated(wired.trainer.state.params)
+    assert replicated(wired.trainer.state.params, over=jax.local_device_count())
 
 
 def test_the_state_a_learner_carries_forward_is_still_replicated_after_an_update() -> None:
@@ -250,7 +253,7 @@ def test_the_state_a_learner_carries_forward_is_still_replicated_after_an_update
 
     wired.trainer.run()
 
-    assert replicated(wired.trainer.state.params)
+    assert replicated(wired.trainer.state.params, over=jax.local_device_count())
 
 
 def test_one_replay_server_is_started_for_each_device_in_the_learners_mesh() -> None:
