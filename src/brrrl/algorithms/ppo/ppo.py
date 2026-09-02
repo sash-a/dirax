@@ -283,8 +283,7 @@ def main() -> None:
     update_fn = jax.jit(updater.update)
 
     actor_recorder, learner_recorder = default_logger(
-        # WandbLogger("brrrl", tags=["PPO", env_name]),
-        MultiLogger([StdoutLogger()]),
+        MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),
         every_records=20,
     )
 
@@ -296,6 +295,8 @@ def main() -> None:
         update_state, learn_metrics = update_fn(update_state, stacked)
         param_source.publish(update_state.params)
         learner_recorder.record(learn_metrics)
+
+    roller.close()
 
 
 if __name__ == "__main__":
