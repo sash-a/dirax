@@ -10,6 +10,9 @@ import pytest
 NUM_STEPS = 3
 NUM_ENVS = 4
 
+NUM_DEVICES = 2
+"""Enough of a mesh for a sharded axis to be a different thing from a replicated one."""
+
 COMPILATION_CACHE = Path(__file__).parent.parent / ".jax-cache"
 
 
@@ -26,6 +29,11 @@ def pytest_configure() -> None:
     ``JAX_PLATFORMS`` is read as jax is imported and so cannot be set from here, but a platform
     chosen explicitly still wins.
 
+    That one CPU is split into `NUM_DEVICES` of them, because a single device compiles every
+    mistake data parallelism can make and proves none of them: a spec that never splits the batch,
+    a metric that leaves a `shard_map` still varying per shard, an all-reduce that is off by the
+    device count. ``JAX_NUM_CPU_DEVICES`` still wins, for running the suite wider.
+
     A primitive applied eagerly compiles the same kernels every run, and JAX caches those in
     process only. Both thresholds have to move for the on-disk cache to hold anything: it ships
     tuned for training steps and skips whatever compiles in under a second, which is all of this.
@@ -34,6 +42,8 @@ def pytest_configure() -> None:
     os.environ.setdefault("RAY_ENABLE_UV_RUN_RUNTIME_ENV", "0")
     if not jax.config.jax_platforms:
         jax.config.update("jax_platforms", "cpu")
+    if jax.config.jax_num_cpu_devices < 0:
+        jax.config.update("jax_num_cpu_devices", NUM_DEVICES)
     if not jax.config.jax_compilation_cache_dir:
         jax.config.update("jax_compilation_cache_dir", str(COMPILATION_CACHE))
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.0)
