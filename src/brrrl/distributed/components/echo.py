@@ -113,7 +113,7 @@ class ReplayServer[T: Trajectory]:
         per_device_batch_size: the size of the output batch for each device.
         n_prefetch: the number of batches to prefetch to the GPU.
         example: an example trajectory as input by an actor, wrapped by `echo_example` on the way in.
-        pin_host_memory: whether to pin the echo buffers so D2H transfers are zero-copy.
+        pin_host_memory: whether to pin the echo buffers so D2H transfers are zero-copy. Ignored for a non-GPU learner.
         transport_threads: the number of threads used to place incoming data from actors onto an intermediate queue.
         drainer_threads: the number of threads to drain the intermediate queue into the buffer.
         intermediate_queue_size: the size of the queue where data waits before it is placed into the buffer.
@@ -130,13 +130,15 @@ class ReplayServer[T: Trajectory]:
     intermediate_queue_size: int = 4
     port: list[int] | None = None
 
-    def servers(self, device_count: int) -> list[Server]:
-        """Create ``device_count`` echo servers. Each server emits a batch of size ``per_device_batch_size``."""
+    def servers(self, devices: list[jax.Device]) -> list[Server]:
+        """Create one echo server per device. Each server emits a batch of size ``per_device_batch_size``."""
+        device_count = len(devices)
         ports = self.port if self.port else [0] * device_count
         if len(ports) != device_count:
             exc = f"Provided ports must be the same length as device count or None. Got {len(ports)=}, {device_count=}"
             raise ValueError(exc)
 
+        pin_host_memory = self.pin_host_memory and all(device.platform == "gpu" for device in devices)
         servers: list[Server] = []
         for i in range(device_count):
             server = Server(
@@ -146,7 +148,7 @@ class ReplayServer[T: Trajectory]:
                 num_buffers=max(2, int(self.table_size) + 1),
                 num_drainers=self.drainer_threads,
                 producer_queue_size=self.intermediate_queue_size,
-                pin_host_memory=self.pin_host_memory,
+                pin_host_memory=pin_host_memory,
             )
             server.start()
             servers.append(server)

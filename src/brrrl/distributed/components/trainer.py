@@ -41,7 +41,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
         mesh, model_sharding, data_sharding = rule.shardings()
         self.update_fn = rule.compiled(mesh, model_sharding, data_sharding)
 
-        self.replay_servers = replay.servers(len(data_sharding.device_set))
+        self.replay_servers = replay.servers(list(data_sharding.mesh.devices.flat))
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
 
         # TODO: will this automatically replicate?
@@ -56,8 +56,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
                 self.state, learn_metrics = self.update_fn(self.state, trajectory)
 
             # TODO: ideally we overlap this publish with the update.
-            # To do this we'd need to publish the previous params
-            # Or we could put this work on a thread
+            # We could put this work on a thread
             with self.timer("param_publish_time"):
                 trainer_version = self.param_sink.publish(self.state.params)
 
