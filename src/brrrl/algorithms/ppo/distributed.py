@@ -102,6 +102,7 @@ def main():
     rollout_len = 128
     num_envs = 1
     num_actors = 8
+    actor_ids = list(range(num_actors))
     num_agents = 1
     num_updates = 5000
     num_epochs = 2
@@ -129,16 +130,6 @@ def main():
     # TODO: this should probably be done in learner, e.g for a very big model the head node may not have enough RAM
     params = network.init(weights_key, env.observation_space.sample())
 
-    # TODO(params):
-    #  Mirror per actor node -> in actor code
-    #  Resources
-    param_store = (
-        ray.remote(RayParamStore).options(**RayParamStore.RAY_OPTIONS).remote(ParamStore(VersionedParams(params, 0)))
-    )
-
-    def make_sink():
-        return RayParamSink(param_store)
-
     # --- Learner ---
     # TODO(learner):
     #  placement (builtin stuff + placement group)
@@ -160,6 +151,15 @@ def main():
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
     actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, every_records=20)
 
+    # TODO(params):
+    #  Mirror per actor node -> in actor code
+    #  Resources
+    param_store = (
+        ray.remote(RayParamStore)
+        .options(**RayParamStore.RAY_OPTIONS)
+        .remote(ParamStore(VersionedParams(params, 0)), actor_ids)
+    )
+
     trainer = (
         ray.remote(Trainer)
         .options(num_cpus=4, num_gpus=1, **Trainer.RAY_OPTIONS)
@@ -168,7 +168,7 @@ def main():
             update_state,
             distributed_rule,
             replay,
-            make_sink,
+            lambda: RayParamSink(param_store),
             learner_recorder,
         )
     )
@@ -184,14 +184,13 @@ def main():
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action, logp, value)
 
-    def make_roller(key: PRNGKey) -> Roller:
+    def make_roller(actor_id: int, key: PRNGKey) -> Roller:
         iinfo = jnp.iinfo(jnp.int32)
-        seed = jax.device_get(jax.random.randint(key, (), iinfo.min, iinfo.max, jnp.int32)).item()
+        seed = jax.device_get(jax.random.randint(key, (), 0, iinfo.max, jnp.int32)).item()
         # TODO: this needs a mirror per actor and needs to ref the mirror
-        param_source = RayParamSource(param_store)
+        param_source = RayParamSource(param_store, actor_id)
         traj_accumulator = TrajectoryAccumulator(example_transition)
         policy = LocalPolicy(jax.jit(actor_forward), param_source, key)
-        # TODO: how to seed the stepper/env
         stepper = LoopedStepper([make_env for _ in range(num_envs)], wrap=partial(NormalizeReward, gamma=gamma))
         return Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
 
@@ -205,11 +204,11 @@ def main():
         ray.remote(Actor)
         .options(num_cpus=1, num_gpus=0, **Actor.RAY_OPTIONS)
         .remote(
-            partial(make_roller, policy_keys[i]),
+            partial(make_roller, i, policy_keys[i]),
             partial(make_replay_client, i),
             actor_recorder,
         )
-        for i in range(num_actors)
+        for i in actor_ids
     ]
     actor_futures = [actor.run.remote() for actor in actors]
     try:

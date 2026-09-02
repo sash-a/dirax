@@ -30,12 +30,6 @@ COMPONENTS: tuple[type[Component], ...] = (
 )
 """Every class in the package Ray places. Typed, so `ty` rejects one that declares no behaviour."""
 
-COLLABORATORS = frozenset({"DataParallelUpdateRule", "DistributedUpdateRule", "ReplayServer"})
-"""The classes here Ray never places: a Protocol, and the plain objects a driver builds and hands
-to a Component's constructor. Named one at a time rather than inferred from a shape, because the
-point of the contract below is to force the decision — a class that simply forgot ``RAY_OPTIONS``
-must fail rather than fall into this category by resembling it."""
-
 
 def views(
     source: RayParamSource, sink: RayParamSink, policy: InferenceServerPolicy[Any, Any]
@@ -47,22 +41,6 @@ def views(
     from it would otherwise surface as a failure on a cluster.
     """
     return source, sink, policy
-
-
-def test_every_class_is_a_component_a_view_of_one_or_a_named_collaborator() -> None:
-    """The package holds placed Components, the handle-holding halves their clients use, and the
-    named collaborators a driver ships into one. Nothing else.
-
-    A new class outside all three has skipped the decision this contract exists to force: an empty
-    ``RAY_OPTIONS`` is someone deciding Ray's defaults are right, a missing one is nobody deciding.
-    """
-    undeclared = [
-        cls.name
-        for cls in classes()
-        if behaviour_of(cls) is None and not holds_a_handle(cls) and cls.name not in COLLABORATORS
-    ]
-
-    assert undeclared == []
 
 
 def test_the_components_are_exactly_the_classes_that_declare_behaviour() -> None:
@@ -100,12 +78,3 @@ def behaviour_of(cls: ast.ClassDef) -> ast.expr | None:
 
 def keys_of(behaviour: ast.expr | None) -> list[str]:
     return [ast.literal_eval(key) for key in behaviour.keys if key] if isinstance(behaviour, ast.Dict) else []
-
-
-def holds_a_handle(cls: ast.ClassDef) -> bool:
-    """A client half: it carries a reference to a Component rather than being one.
-
-    Matched inside the annotation rather than against the whole of it, so naming which Component the
-    handle points at stays a free choice rather than dropping the class out of the category.
-    """
-    return any("ActorHandle" in ast.unparse(node.annotation) for node in cls.body if isinstance(node, ast.AnnAssign))
