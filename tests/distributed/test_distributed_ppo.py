@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
+from conftest import replicated
 from echo import Server
 from jax.sharding import Mesh, PartitionSpec
 
@@ -131,6 +132,20 @@ def test_ppos_own_update_rule_compiles_and_runs_under_a_data_parallel_mesh(
     moved = jax.tree.map(lambda before, after: bool(jnp.any(before != after)), params, updated.params)
     assert any(jax.tree.leaves(moved)), "the update ran but left every parameter where it was"
     assert all(np.shape(value) == () and np.isfinite(value) for value in metrics.values())
+
+
+def test_the_whole_learner_state_lands_replicated_and_not_only_its_parameters(
+    network: tuple[PPOApply, Params],
+) -> None:
+    """`Trainer` puts the state, not the parameters, and PPO's is mostly not parameters: an adam
+    chain's step count and its two moment trees ride along, and so does the PRNG key the epochs are
+    shuffled with. The update is compiled expecting every one of them replicated, and a key that
+    had landed split would shuffle each shard's minibatches differently."""
+    apply_fn, params = network
+    _, model, _ = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS).shardings()  # ty: ignore[invalid-argument-type]
+    state = PPOUpdateState(params, optimizer().init(params), jax.random.key(2))
+
+    assert replicated(jax.device_put(state, model), over=jax.local_device_count())
 
 
 def test_the_batch_size_a_rule_declares_is_the_shard_it_will_see_and_not_the_whole_batch(

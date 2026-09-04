@@ -23,6 +23,7 @@ from typing import Any, NamedTuple, cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from conftest import Recorded, replicated
 
@@ -30,7 +31,7 @@ from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.metrics.collector import WindowedRecorder
 from brrrl.params.params import ParamStore
-from brrrl.types import Metrics, Params, TrainerBatch, VersionedParams
+from brrrl.types import Metrics, Params, PRNGKey, TrainerBatch, VersionedParams
 
 AXIS = "devices"
 ROWS = 4
@@ -67,7 +68,13 @@ all, because a rank-0 leaf has no axis anyone could have split."""
 
 
 class State(NamedTuple):
+    """``device_put`` is handed the whole state, so the optimiser's own arrays and the key ride with
+    the parameters and have to land replicated alongside them. Nothing here reads them; they are
+    here because they are what a real state carries across that call."""
+
     params: Params
+    opt_state: optax.OptState
+    key: PRNGKey
 
 
 @dataclass(frozen=True)
@@ -81,7 +88,7 @@ class Decimals:
         held = state.params[COLLECTION]
         folded = cast(jax.Array, held[SEEN]) * 10 + mean
         shaped = cast(jax.Array, held[SHAPED]) + mean
-        return State({COLLECTION: {SEEN: folded, SHAPED: shaped}}), {"batch_mean": mean}
+        return state._replace(params={COLLECTION: {SEEN: folded, SHAPED: shaped}}), {"batch_mean": mean}
 
     def isvalid(self) -> bool:
         return True
@@ -157,7 +164,8 @@ def build(feed: list[TrainerBatch[Any]] | None = None, window: int = 0) -> Wired
     collected = Recorded()
     recorder = WindowedRecorder(collected, window) if window else collected
     rule = DataParallelUpdateRule(Decimals(), AXIS)
-    trainer = Trainer(len(replay.batches), State(params), rule, replay, lambda: store, recorder)  # ty: ignore[invalid-argument-type]
+    state = State(params, optax.adam(1e-3).init(params), jax.random.key(3))
+    trainer = Trainer(len(replay.batches), state, rule, replay, lambda: store, recorder)  # ty: ignore[invalid-argument-type]
     return Wired(trainer, replay, store, collected)
 
 
@@ -240,10 +248,13 @@ def test_the_state_a_learner_starts_from_is_replicated_onto_every_device() -> No
     """``device_put`` against a replicated `NamedSharding` is what puts a whole copy of the model on
     each device, and the update is compiled expecting exactly that. A state left where it was built
     is a transfer per step, and it is the case worth naming: it reads as fully replicated to its own
-    sharding, so only the count of devices holding a copy tells the two apart."""
+    sharding, so only the count of devices holding a copy tells the two apart.
+
+    The whole state, not its parameters: that is what the call is given, and the optimiser's moments
+    are the larger half of it."""
     wired = build()
 
-    assert replicated(wired.trainer.state.params, over=jax.local_device_count())
+    assert replicated(wired.trainer.state, over=jax.local_device_count())
 
 
 def test_the_state_a_learner_carries_forward_is_still_replicated_after_an_update() -> None:
@@ -253,7 +264,7 @@ def test_the_state_a_learner_carries_forward_is_still_replicated_after_an_update
 
     wired.trainer.run()
 
-    assert replicated(wired.trainer.state.params, over=jax.local_device_count())
+    assert replicated(wired.trainer.state, over=jax.local_device_count())
 
 
 def test_one_replay_server_is_started_for_each_device_in_the_learners_mesh() -> None:

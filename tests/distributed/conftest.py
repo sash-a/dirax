@@ -75,10 +75,23 @@ def replicated(tree: Any, over: int) -> bool:
     satisfies it and a state that was never placed reads as replicated. What separates the two is
     how many devices are holding a copy and how much of the array each of them holds, which is
     what this counts.
+
+    Compared on the host, because two shards live on two devices and a jax comparison of them
+    refuses the mismatch rather than answering.
     """
     leaves: list[jax.Array] = jax.tree.leaves(tree)
     return all(len(leaf.addressable_shards) == over for leaf in leaves) and all(
-        shard.data.shape == leaf.shape and np.array_equal(shard.data, leaf.addressable_shards[0].data)
+        shard.data.shape == leaf.shape and np.array_equal(held(shard.data), held(leaf.addressable_shards[0].data))
         for leaf in leaves
         for shard in leaf.addressable_shards
     )
+
+
+def held(shard: jax.Array) -> np.ndarray:
+    """One device's copy, as values numpy can compare.
+
+    A typed PRNG key has no numpy equivalent and numpy reads one as unequal to itself rather than
+    raising, so a state's key is compared by the words behind it.
+    """
+    raw = jax.random.key_data(shard) if jax.dtypes.issubdtype(shard.dtype, jax.dtypes.prng_key) else shard
+    return np.asarray(jax.device_get(raw))
