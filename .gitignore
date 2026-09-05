@@ -20,3 +20,6 @@ wheels/
 
 # Logging artifacts
 wandb/
+
+# checkpoints
+checkpoints/

@@ -21,9 +21,11 @@ from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule
 from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.checkpointing.checkpointer import NamedTupleLayout, OrbaxCheckpointer, get_save_path
 from brrrl.distributed.components.actor import Actor
+from brrrl.distributed.components.checkpointer import CheckpointStore, RayCheckpointer
 from brrrl.distributed.components.echo import ReplayServer, echo_example
-from brrrl.distributed.components.metrics import default_remote_logger
+from brrrl.distributed.components.metrics import RayMetricCollector, default_remote_logger
 from brrrl.distributed.components.params import RayParamSink, RayParamSource, RayParamStore
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
@@ -78,10 +80,11 @@ def record(obs, term, trunc, reward, policy_output: PPOPolicyOutput):
 
 
 def close(
-    actors: list[ActorProxy[Any]],
+    actors: list[ActorProxy[Actor]],
     actor_futures: list[ObjectRef],
-    trainer: ActorProxy[Any],
-    collector: ActorProxy[Any],
+    trainer: ActorProxy[Trainer],
+    collector: ActorProxy[RayMetricCollector],
+    checkpointer: RayCheckpointer[PPOUpdateState],
     timeout: float = 60,
 ) -> None:
     """Unwind outwards from what blocks: the Actors, then the servers they send to, then the collector.
@@ -90,9 +93,10 @@ def close(
         TimeoutError: An Actor was still running ``timeout`` seconds after being asked to close.
     """
     ray.get([actor.close.remote() for actor in actors])
+    checkpointer.close()
     stopped, running = ray.wait(actor_futures, num_returns=len(actor_futures), timeout=timeout)
-    ray.get(trainer.close.remote())
-    ray.get(collector.close.remote())
+    ray.get(trainer.close.remote(), timeout=timeout)
+    ray.get(collector.close.remote(), timeout=timeout)
     ray.get(stopped)  # An Actor that died mid-run is a real error, not a quiet one.
     if running:
         raise TimeoutError(f"{len(running)}/{len(actors)} actors still running {timeout:g}s after close")
@@ -105,13 +109,15 @@ def main():
     actor_ids = list(range(num_actors))
     num_agents = 1
     num_updates = 5000
+    batch_size = 4  # number of rollouts per device
     num_epochs = 2
     num_minibatches = 4
+    timesteps_per_device = rollout_len * num_envs * batch_size
     gamma = 0.99
     learning_rate = 3e-4
     table_size = 2
-    batch_size = 4  # number of rollouts per device
     n_prefetch = 1
+    checkpoint_every = 25  # number of updates between checkpoints
     shard_axis_name = "devices"
     env_name = "Acrobot-v1"
 
@@ -146,7 +152,7 @@ def main():
     if not rule.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = PPOUpdateState(params, opt_state, update_key)
-    distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)  # TODO: fix typing around rule
+    distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)
 
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
     actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, every_records=20)
@@ -160,16 +166,26 @@ def main():
         .remote(ParamStore(VersionedParams(params, 0)), actor_ids)
     )
 
-    trainer = (
+    save_path = get_save_path().resolve()
+    checkpoint_store = (
+        ray.remote(CheckpointStore)
+        .options(**CheckpointStore.RAY_OPTIONS)
+        .remote(lambda: OrbaxCheckpointer(save_path, NamedTupleLayout(PPOUpdateState)))
+    )
+    checkpointer = RayCheckpointer(checkpoint_store, every=checkpoint_every)
+
+    trainer: ActorProxy[Trainer] = (
         ray.remote(Trainer)
         .options(num_cpus=4, num_gpus=1, **Trainer.RAY_OPTIONS)
         .remote(
             num_updates,
+            timesteps_per_device,
             update_state,
             distributed_rule,
             replay,
             lambda: RayParamSink(param_store),
             learner_recorder,
+            checkpointer,
         )
     )
     replay_addrs = ray.get(trainer.get_replay_addresses.remote())
@@ -197,10 +213,11 @@ def main():
     def make_replay_client(i: int) -> echo.TcpClient:
         replay_addr = replay_addrs[i % len(replay_addrs)]
         host, port = replay_addr.split(":")
-        return echo.TcpClient(host, int(port), echo_example(PPOTrajectory(**example_transition)), max_inflight_msgs=2)
+        example = echo_example(PPOTrajectory(**example_transition))
+        return echo.TcpClient(host, int(port), example, max_inflight_msgs=2)  # ty: ignore[invalid-argument-type]
 
     policy_keys = jax.random.split(policy_key, num_actors)
-    actors = [
+    actors: list[ActorProxy[Actor]] = [
         ray.remote(Actor)
         .options(num_cpus=1, num_gpus=0, **Actor.RAY_OPTIONS)
         .remote(
@@ -215,7 +232,7 @@ def main():
         ray.get(trainer.run.remote())
     finally:
         try:
-            close(actors, actor_futures, trainer, collector)
+            close(actors, actor_futures, trainer, collector, checkpointer)
         finally:
             ray.shutdown()
 

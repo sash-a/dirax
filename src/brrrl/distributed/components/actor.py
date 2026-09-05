@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from typing import ClassVar
 
+import ray
 from echo import TcpClient
 
 from brrrl.acting.roller import Roller
@@ -28,17 +29,19 @@ class Actor:
         self.stop = False
 
     # TODO: how to support inference servers with actors running in the background
+    @ray.method
     def run(self) -> None:
         try:
             while not self.stop:
                 trajectory, metrics = self.roller.rollout()
-                self.replay_client.send(trajectory)
+                self.replay_client.send(trajectory)  # ty: ignore[invalid-argument-type]
                 self.metric_recorder.record(metrics, self.roller.num_transitions)
         finally:
             self.roller.close()
             self.replay_client.close()
             self.metric_recorder.close()
 
+    @ray.method
     def close(self) -> None:
         """Asks the loop to stop after the rollout it is on, and returns without waiting for it.
 

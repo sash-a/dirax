@@ -5,6 +5,7 @@ import jax
 import numpy as np
 import ray
 
+from brrrl.distributed.components.checkpointer import RayCheckpointer
 from brrrl.distributed.components.echo import ReplayServer
 from brrrl.distributed.components.update_rule import DistributedUpdateRule
 from brrrl.distributed.placement.component import Behaviour
@@ -22,13 +23,15 @@ class Trainer[S: UpdateState, T: Trajectory]:
     def __init__(
         self,
         num_updates: int,
+        timesteps_per_device: int,
         state: S,
         rule: DistributedUpdateRule[S, T],
         replay: ReplayServer,
         # TODO: give sink a send period or make a windowed sink
-        # does this need to be a factory, it's gonna hold a ref to store
+        #  does this need to be a factory, it's gonna hold a ref to store
         make_param_sink: Callable[[], ParamSink],
         metric_recorder: MetricRecorder,
+        checkpointer: RayCheckpointer[S],
     ):
         self.num_updates = num_updates
 
@@ -38,15 +41,19 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self.metric_recorder = metric_recorder
         self.timer = Timer(AggregatedElapsed)
 
+        self.checkpointer = checkpointer
+
         mesh, model_sharding, data_sharding = rule.shardings()
         self.update_fn = rule.compiled(mesh, model_sharding, data_sharding)
 
         self.replay_servers = replay.servers(list(data_sharding.mesh.devices.flat))
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
 
-        # TODO: will this automatically replicate?
+        self.timesteps_per_update = timesteps_per_device * len(self.replay_servers)
+
         self.state = jax.device_put(state, model_sharding)
 
+    @ray.method
     def run(self) -> None:
         for i in range(self.num_updates):
             with self.timer("traj_wait_time"):
@@ -55,19 +62,31 @@ class Trainer[S: UpdateState, T: Trajectory]:
             with self.timer("update_dispatch_time"):
                 self.state, learn_metrics = self.update_fn(self.state, trajectory)
 
-            # TODO: ideally we overlap this publish with the update.
-            # We could put this work on a thread
+            timestep = (i + 1) * self.timesteps_per_update
+
+            # TODO: may need to put this on a thread to fully overlap with the update
             with self.timer("param_publish_time"):
                 trainer_version = self.param_sink.publish(self.state.params)
 
-            # TODO: checkpointing
+            # TODO:
+            # checkpointing with metrics what is useful to add here and adding return in evaluator
             with self.timer("checkpointing_time"):
-                ...
+                self.checkpointer.save(i, self.state, None, metadata={"timestep": timestep, "update": i + 1})
 
             versions = {"staleness": np.mean(trainer_version - roller_version)}
-            # TODO: check if windowed metric recording will handle lists and scalars
             self.metric_recorder.record({**replay_metrics, **learn_metrics, **versions, **self.timer.dump()})
 
+        final_timestep = self.num_updates * self.timesteps_per_update
+        self.checkpointer.save(
+            self.num_updates + 1,
+            self.state,
+            None,
+            metadata={"timestep": final_timestep, "update": self.num_updates + 1},
+            force=True,
+        )
+        self.checkpointer.wait()
+
+    @ray.method
     def close(self) -> None:
         """Stops the replay servers and flushes what the metric window still holds.
 
@@ -79,6 +98,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
             server.close()
         self.metric_recorder.close()
 
+    @ray.method
     def get_replay_addresses(self) -> list[str]:
         """Returns one address per echo server."""
         ip = ray.util.get_node_ip_address()

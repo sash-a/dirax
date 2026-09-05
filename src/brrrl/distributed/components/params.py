@@ -3,7 +3,7 @@ from typing import ClassVar, Literal, overload
 
 import ray
 from ray import ObjectRef
-from ray.actor import ActorHandle
+from ray.actor import ActorProxy
 
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.params.params import ParamStore
@@ -25,6 +25,7 @@ class RayParamStore:
         for queue in self._fresh.values():
             queue.put_nowait(None)  # The driver seeded the Store, so no reader waits for its first params.
 
+    @ray.method
     async def publish(self, params: Params) -> int:
         version = self.store.publish(params)
         for queue in self._fresh.values():
@@ -32,10 +33,12 @@ class RayParamStore:
                 queue.put_nowait(None)
         return version
 
+    @ray.method
     async def version(self) -> int:
         """The current Version, for a caller that wants it without spending a reader's wake."""
         return self.store.get(block=True).version
 
+    @ray.method
     async def get(self, reader_id: int) -> VersionedParams:
         """Parks until a publish this reader has not been woken for lands."""
         await self._fresh[reader_id].get()
@@ -49,9 +52,9 @@ class RayParamSink:
     return the version when sending params. Only right while it is the store's only writer.
     """
 
-    def __init__(self, store: ActorHandle[RayParamStore]) -> None:
+    def __init__(self, store: ActorProxy[RayParamStore]) -> None:
         self.store = store
-        self.version = ray.get(store.version.remote())
+        self.version = ray.get(self.store.version.remote())
 
     def publish(self, params: Params) -> int:
         self.store.publish.remote(params)
@@ -62,10 +65,10 @@ class RayParamSink:
 class RayParamSource:
     """A reader's half of the long-poll: one request always in flight, claimed when it lands."""
 
-    def __init__(self, store: ActorHandle[RayParamStore], id_ref: int) -> None:
+    def __init__(self, store: ActorProxy[RayParamStore], id_ref: int) -> None:
         self.store = store
         self.id_ref = id_ref
-        self.param_request: list[ObjectRef] = [store.get.remote(id_ref)]
+        self.param_request: list[ObjectRef] = [self.store.get.remote(id_ref)]
 
     @overload
     def get(self, block: Literal[True]) -> VersionedParams: ...

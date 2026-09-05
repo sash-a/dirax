@@ -4,7 +4,7 @@ from typing import ClassVar
 
 import ray
 from etils import epath
-from ray.actor import ActorHandle
+from ray.actor import ActorProxy
 
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricCollector, MetricRecorder, Origin, WindowedRecorder
@@ -24,19 +24,22 @@ class RayMetricCollector:
     def __init__(self, build_collector: Callable[[], MetricCollector]) -> None:
         self.collector = build_collector()
 
-    def collect(self, origin: Origin, metrics: Metrics, num_transitions: int = 0) -> None:
+    @ray.method
+    def collect(self, origin: Origin, metrics: Metrics, num_transitions: int) -> None:
         self.collector.collect(origin, metrics, num_transitions)
 
-    def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None = None) -> None:
+    @ray.method
+    def collect_artifact(self, origin: Origin, path: epath.Path, directory: str | None) -> None:
         self.collector.collect_artifact(origin, path, directory)
 
+    @ray.method
     def close(self) -> None:
         self.collector.close()
 
 
 @dataclass
 class RayMetricRecorder:
-    collector: ActorHandle
+    collector: ActorProxy[RayMetricCollector]
     origin: Origin
 
     def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
@@ -52,7 +55,7 @@ class RayMetricRecorder:
 
 def default_remote_logger(
     build_backend: Callable[[], Logger], every_records: int
-) -> tuple[MetricRecorder, MetricRecorder, ActorHandle[RayMetricCollector]]:
+) -> tuple[MetricRecorder, MetricRecorder, ActorProxy[RayMetricCollector]]:
     """One collector for the whole run, and a windowed view of it for each process that records.
 
     The collector owning the step clock is what makes it a run's clock rather than one process's:
