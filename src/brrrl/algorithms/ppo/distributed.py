@@ -34,6 +34,7 @@ from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
 from brrrl.types import VersionedParams
+from brrrl.utils.duration import EveryTicks
 from brrrl.utils.optax import mean_by_axis
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
@@ -117,7 +118,7 @@ def main():
     learning_rate = 3e-4
     table_size = 2
     n_prefetch = 1
-    checkpoint_every = 25  # number of updates between checkpoints
+    checkpoint_every = EveryTicks(25)
     shard_axis_name = "devices"
     env_name = "Acrobot-v1"
 
@@ -155,7 +156,7 @@ def main():
     distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)
 
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
-    actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, every_records=20)
+    actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, EveryTicks(20))
 
     # TODO(params):
     #  Mirror per actor node -> in actor code

@@ -7,6 +7,7 @@ from etils import epath
 from brrrl.metrics.accumulator import MetricAccumulator
 from brrrl.metrics.logger import Logger
 from brrrl.types import Metrics
+from brrrl.utils.duration import Duration, Instant
 
 
 class Origin(StrEnum):
@@ -75,24 +76,26 @@ class LocalMetricRecorder:
 
 @dataclass
 class WindowedRecorder:
-    """Folds records and forwards their summary once every ``every_records`` of them."""
+    """Folds records and forwards their summary once every ``every`` of them."""
 
     recorder: MetricRecorder
-    every_records: int
+    every: Duration
     verbose: bool = False
     accumulators: dict[str, MetricAccumulator] = field(default_factory=dict)
     records: int = 0
     transitions: int = 0
-    next_flush: int = 1
-    """One, so the first record lands immediately"""
+    flushed_at: Instant | None = field(default=None, init=False)
 
     def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
         for key, values in metrics.items():
             self.accumulators.setdefault(key, MetricAccumulator()).fold(values)
         self.records += 1
         self.transitions += num_transitions
-        if self.records >= self.next_flush:
+
+        now = Instant.now(self.records)
+        if self.flushed_at is None or self.every.due(now, self.flushed_at):
             self.flush()
+            self.flushed_at = now
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         """Artifacts have nothing to fold, so they skip the window."""
@@ -102,7 +105,6 @@ class WindowedRecorder:
         """Forwards the window, carrying the transitions it spanned so the step clock stays exact."""
         accumulators, self.accumulators = self.accumulators, {}
         transitions, self.transitions = self.transitions, 0
-        self.records, self.next_flush = 0, self.every_records
         summary = {
             f"{key}/{stat}": value
             for key, accumulator in accumulators.items()

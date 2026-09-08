@@ -36,6 +36,7 @@ from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
 from brrrl.types import Array, Metrics, Params, PRNGKey, VersionedParams
+from brrrl.utils.duration import EveryTicks
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
 
@@ -284,7 +285,7 @@ def main() -> None:
 
     actor_recorder, learner_recorder = default_logger(
         MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),
-        every_records=20,
+        every=EveryTicks(20),
     )
 
     for i in range(num_updates):

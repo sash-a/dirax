@@ -10,6 +10,7 @@ from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricCollector, MetricRecorder, Origin, WindowedRecorder
 from brrrl.metrics.logger import Logger, NamespacedProcessor
 from brrrl.types import Metrics
+from brrrl.utils.duration import Duration
 
 
 class RayMetricCollector:
@@ -54,7 +55,7 @@ class RayMetricRecorder:
 
 
 def default_remote_logger(
-    build_backend: Callable[[], Logger], every_records: int
+    build_backend: Callable[[], Logger], every: Duration
 ) -> tuple[MetricRecorder, MetricRecorder, ActorProxy[RayMetricCollector]]:
     """One collector for the whole run, and a windowed view of it for each process that records.
 
@@ -77,6 +78,6 @@ def default_remote_logger(
         )
 
     collector = ray.remote(RayMetricCollector).options(**RayMetricCollector.RAY_OPTIONS).remote(build_collector)
-    actor = WindowedRecorder(RayMetricRecorder(collector, Origin.ACTOR), every_records)
-    learner = WindowedRecorder(RayMetricRecorder(collector, Origin.LEARNER), every_records)
+    actor = WindowedRecorder(RayMetricRecorder(collector, Origin.ACTOR), every)
+    learner = WindowedRecorder(RayMetricRecorder(collector, Origin.LEARNER), every)
     return actor, learner, collector
