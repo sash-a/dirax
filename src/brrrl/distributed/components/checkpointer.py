@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import ClassVar
 
 import jax
@@ -10,7 +9,7 @@ from ray.actor import ActorProxy
 from brrrl.checkpointing.checkpointer import Checkpointer, Config
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.types import Metrics, UpdateState
-from brrrl.utils.duration import Duration, Instant
+from brrrl.utils.duration import Duration, Schedule
 
 
 class CheckpointStore[S: UpdateState]:
@@ -63,7 +62,6 @@ class CheckpointStore[S: UpdateState]:
         self.checkpointer.close()
 
 
-@dataclass
 class RayCheckpointer[S: UpdateState]:
     """A learner's view of the store: saves are posted and forgotten, reads block.
 
@@ -73,10 +71,10 @@ class RayCheckpointer[S: UpdateState]:
           still applies behind this one, so leave it saving every step unless both are wanted.
     """
 
-    store: ActorProxy[CheckpointStore[S]]
-    every: Duration
-    save_futures: list[ray.ObjectRef] = field(default_factory=list, init=False)
-    saved_at: Instant | None = field(default=None, init=False)
+    def __init__(self, store: ActorProxy[CheckpointStore[S]], every: Duration):
+        self.store = store
+        self.every = Schedule(every)
+        self.save_futures = []
 
     def save(
         self,
@@ -97,16 +95,14 @@ class RayCheckpointer[S: UpdateState]:
                 restoring the arrays.
             force: Save regardless of the interval, for a run's final checkpoint.
         """
-        now = Instant.now(step)
         # Only do the D2H and remote call on required steps
-        if self.saved_at is None or force or self.every.due(now, self.saved_at):
+        if self.every.due() or force:
             # One transfer off device for both: arrays cannot cross the wire, and the store cannot
             # decline the step until they have.
             state, metrics = jax.device_get((state, metrics))
             self._check_for_save_errors()
             save_future = self.store.save.remote(step, state, metrics, metadata, force)
             self.save_futures.append(save_future)
-            self.saved_at = now
 
     def metadata(self, step: int | None = None) -> Config | None:
         """Bookkeeping filed with the checkpoint at ``step``, latest when None, without reading arrays."""

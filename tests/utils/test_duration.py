@@ -4,17 +4,24 @@ A checkpointer and a metric window ask the same question once a tick, so most of
 is shared rather than per-implementation: a Duration answers rather than acts, which is what lets
 one value serve several callers and lets a caller ask twice without spending anything. `Instant` is
 built by hand throughout — the pair of clocks is data, so nothing here needs a fake one.
+
+A `Schedule` is the other half: the same question with the position kept, so a yes spends the span
+and the caller keeps no count of its own. Its cases pass no `Instant`, because having none to pass
+is the point.
 """
 
 import pytest
 
-from brrrl.utils.duration import Duration, EverySeconds, EveryTicks, Instant
+from brrrl.utils.duration import Duration, EverySeconds, EveryTicks, Instant, Schedule
 
 DURATIONS: tuple[type[Duration], ...] = (EveryTicks, EverySeconds)
 """Every Duration in the module. Typed, so `ty` rejects one that does not answer ``due``."""
 
 A_LONG_TIME = 3600.0
 """Enough seconds that a tick-based case is never the thing under test, and vice versa."""
+
+A_LOT_OF_TICKS = 1000
+"""Enough ticks that no case below reaches the end of a span by asking."""
 
 
 def ticks(step: int) -> Instant:
@@ -117,3 +124,54 @@ def test_an_instant_reads_both_clocks_at_once() -> None:
 
     assert before.step == 7
     assert Instant.now(step=8).time >= before.time
+
+
+def test_a_schedule_is_due_on_its_first_ask() -> None:
+    """Nothing has passed yet, and that first act is what every caller wants: the sink's seeding
+    publish, the window's first flush, the checkpoint at step zero."""
+    schedule = Schedule(EveryTicks(A_LOT_OF_TICKS))
+
+    assert schedule.due() is True
+
+
+def test_a_yes_spends_the_span() -> None:
+    """Where a Duration answers, a Schedule takes a turn. The inverse of
+    `test_asking_twice_gives_the_same_answer`, and why the two must not share a name in a reader's
+    head."""
+    schedule = Schedule(EveryTicks(3))
+
+    assert [schedule.due() for _ in range(7)] == [True, False, False, True, False, False, True]
+
+
+def test_asking_is_what_advances_the_count() -> None:
+    """A no still moves a Schedule on, because what it counts is asks. A caller counting for itself
+    has to advance a number that only a yes changes, which is how a sink gated on its own param
+    Version published nothing at all."""
+    schedule = Schedule(EveryTicks(2))
+
+    assert [ask for ask in range(1, 7) if schedule.due()] == [1, 3, 5]
+
+
+def test_a_schedule_of_one_tick_is_due_every_ask() -> None:
+    schedule = Schedule(EveryTicks(1))
+
+    assert all(schedule.due() for _ in range(5))
+
+
+def test_one_duration_serves_several_schedules() -> None:
+    """The sharing `test_one_duration_serves_several_callers` buys, now that a position is held: an
+    actor's window and a learner's are built from one ``every`` and take their own turns."""
+    every_three = EveryTicks(3)
+    window, other_window = Schedule(every_three), Schedule(every_three)
+
+    assert [window.due() for _ in range(3)] == [True, False, False]
+    assert other_window.due() is True
+
+
+def test_a_schedule_on_the_clock_does_not_come_round_on_asks() -> None:
+    """It counts asks only to have something to hand its Duration; a clock-based one reads the
+    other half of the Instant, so a busy caller does not hurry it."""
+    schedule = Schedule(EverySeconds(A_LONG_TIME))
+
+    assert schedule.due() is True
+    assert [schedule.due() for _ in range(3)] == [False, False, False]

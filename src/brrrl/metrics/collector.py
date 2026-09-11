@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
@@ -7,7 +7,7 @@ from etils import epath
 from brrrl.metrics.accumulator import MetricAccumulator
 from brrrl.metrics.logger import Logger
 from brrrl.types import Metrics
-from brrrl.utils.duration import Duration, Instant
+from brrrl.utils.duration import Duration, Schedule
 
 
 class Origin(StrEnum):
@@ -74,28 +74,23 @@ class LocalMetricRecorder:
         self.collector.close()
 
 
-@dataclass
 class WindowedRecorder:
     """Folds records and forwards their summary once every ``every`` of them."""
 
-    recorder: MetricRecorder
-    every: Duration
-    verbose: bool = False
-    accumulators: dict[str, MetricAccumulator] = field(default_factory=dict)
-    records: int = 0
-    transitions: int = 0
-    flushed_at: Instant | None = field(default=None, init=False)
+    def __init__(self, recorder: MetricRecorder, every: Duration, verbose: bool = False, transitions: int = 0):
+        self.recorder = recorder
+        self.every = Schedule(every)
+        self.verbose = verbose
+        self.transitions = transitions
+        self.accumulators = {}
 
     def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
         for key, values in metrics.items():
             self.accumulators.setdefault(key, MetricAccumulator()).fold(values)
-        self.records += 1
         self.transitions += num_transitions
 
-        now = Instant.now(self.records)
-        if self.flushed_at is None or self.every.due(now, self.flushed_at):
+        if self.every.due():
             self.flush()
-            self.flushed_at = now
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         """Artifacts have nothing to fold, so they skip the window."""

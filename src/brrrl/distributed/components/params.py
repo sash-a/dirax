@@ -8,6 +8,7 @@ from ray.actor import ActorProxy
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.params.params import ParamStore
 from brrrl.types import Params, VersionedParams
+from brrrl.utils.duration import Duration, EveryTicks, Schedule
 
 
 class RayParamStore:
@@ -52,13 +53,23 @@ class RayParamSink:
     return the version when sending params. Only right while it is the store's only writer.
     """
 
-    def __init__(self, store: ActorProxy[RayParamStore]) -> None:
+    def __init__(self, store: ActorProxy[RayParamStore], every: Duration | None = None) -> None:
+        """
+        The writer into the ``RayParamStore``
+
+        Args:
+            store: the remote store where params are kept.
+            every: how frequently to push params, defaults to every call to `publish`.
+        """
         self.store = store
+        self.every = Schedule(every or EveryTicks(1))
         self.version = ray.get(self.store.version.remote())
 
     def publish(self, params: Params) -> int:
-        self.store.publish.remote(params)
-        self.version += 1
+        if self.every.due():
+            self.store.publish.remote(params)
+            self.version += 1
+
         return self.version
 
 

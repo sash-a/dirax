@@ -1,4 +1,5 @@
 import time
+from dataclasses import dataclass, field
 from typing import NamedTuple, Protocol, Self
 
 
@@ -21,6 +22,24 @@ class Duration(Protocol):
         having acted by moving the ``prev`` it asks with.
         """
         ...
+
+
+@dataclass
+class Schedule:
+    """A stateful version of `Duration`."""
+
+    every: Duration
+    prev: Instant | None = field(init=False, default=None)
+    ticks: int = field(init=False, default=0)
+
+    def due(self) -> bool:
+        self.ticks += 1
+        now = Instant.now(self.ticks)
+        if self.prev is None or self.every.due(now, self.prev):
+            self.prev = now
+            return True
+        else:
+            return False
 
 
 class EveryTicks:
