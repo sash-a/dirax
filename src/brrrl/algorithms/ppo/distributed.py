@@ -29,6 +29,8 @@ from brrrl.distributed.components.metrics import RayMetricCollector, default_rem
 from brrrl.distributed.components.params import RayParamSink, RayParamSource, RayParamStore
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
+from brrrl.distributed.placement.placement import Placement, Placements
+from brrrl.distributed.placement.preflight import Placed, preflight
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
@@ -122,6 +124,8 @@ def main():
     shard_axis_name = "devices"
     env_name = "Acrobot-v1"
 
+    placements = Placements(trainer=Placement(num_cpus=4, num_gpus=1), actor=Placement(num_cpus=1))
+
     ray.init()
     key = jax.random.key(1)
     weights_key, policy_key, update_key = jax.random.split(key, 3)
@@ -139,7 +143,6 @@ def main():
 
     # --- Learner ---
     # TODO(learner):
-    #  placement (builtin stuff + placement group)
     #  colocation
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(
@@ -156,38 +159,39 @@ def main():
     distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)
 
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
-    actor_recorder, learner_recorder, collector = default_remote_logger(StdoutLogger, EveryTicks(20))
+    actor_recorder, learner_recorder, collector = default_remote_logger(
+        StdoutLogger, EveryTicks(20), placements.metrics
+    )
 
     # TODO(params):
     #  Mirror per actor node -> in actor code
-    #  Resources
-    param_store = (
-        ray.remote(RayParamStore)
-        .options(**RayParamStore.RAY_OPTIONS)
-        .remote(ParamStore(VersionedParams(params, 0)), actor_ids)
-    )
+    param_store = placements.params.apply(RayParamStore).remote(ParamStore(VersionedParams(params, 0)), actor_ids)
 
     save_path = get_save_path().resolve()
-    checkpoint_store = (
-        ray.remote(CheckpointStore)
-        .options(**CheckpointStore.RAY_OPTIONS)
-        .remote(lambda: OrbaxCheckpointer(save_path, NamedTupleLayout(PPOUpdateState)))
+    checkpoint_store = placements.checkpoints.apply(CheckpointStore).remote(
+        lambda: OrbaxCheckpointer(save_path, NamedTupleLayout(PPOUpdateState))
     )
     checkpointer = RayCheckpointer(checkpoint_store, every=checkpoint_every)
 
-    trainer: ActorProxy[Trainer] = (
-        ray.remote(Trainer)
-        .options(num_cpus=4, num_gpus=1, **Trainer.RAY_OPTIONS)
-        .remote(
-            num_updates,
-            timesteps_per_device,
-            update_state,
-            distributed_rule,
-            replay,
-            lambda: RayParamSink(param_store),
-            learner_recorder,
-            checkpointer,
-        )
+    trainer: ActorProxy[Trainer] = placements.trainer.apply(Trainer).remote(
+        num_updates,
+        timesteps_per_device,
+        update_state,
+        distributed_rule,
+        replay,
+        lambda: RayParamSink(param_store),
+        learner_recorder,
+        checkpointer,
+    )
+
+    # Waited on here because the call below blocks on the Trainer, and an unplaceable one hangs it.
+    preflight(
+        [
+            Placed("trainer", placements.trainer, trainer),
+            Placed("params", placements.params, param_store),
+            Placed("checkpoints", placements.checkpoints, checkpoint_store),
+            Placed("metrics", placements.metrics, collector),
+        ]
     )
     replay_addrs = ray.get(trainer.get_replay_addresses.remote())
 
@@ -218,16 +222,17 @@ def main():
         return echo.TcpClient(host, int(port), example, max_inflight_msgs=2)  # ty: ignore[invalid-argument-type]
 
     policy_keys = jax.random.split(policy_key, num_actors)
+    actor_class = placements.actor.apply(Actor)
     actors: list[ActorProxy[Actor]] = [
-        ray.remote(Actor)
-        .options(num_cpus=1, num_gpus=0, **Actor.RAY_OPTIONS)
-        .remote(
+        actor_class.remote(
             partial(make_roller, i, policy_keys[i]),
             partial(make_replay_client, i),
             actor_recorder,
         )
         for i in actor_ids
     ]
+    preflight([Placed("actor", placements.actor, actor) for actor in actors])
+
     actor_futures = [actor.run.remote() for actor in actors]
     try:
         ray.get(trainer.run.remote())

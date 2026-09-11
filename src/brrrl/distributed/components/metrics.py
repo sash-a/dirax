@@ -7,6 +7,7 @@ from etils import epath
 from ray.actor import ActorProxy
 
 from brrrl.distributed.placement.component import Behaviour
+from brrrl.distributed.placement.placement import Placement
 from brrrl.metrics.collector import MetricCollector, MetricRecorder, Origin, WindowedRecorder
 from brrrl.metrics.logger import Logger, NamespacedProcessor
 from brrrl.types import Metrics
@@ -55,7 +56,7 @@ class RayMetricRecorder:
 
 
 def default_remote_logger(
-    build_backend: Callable[[], Logger], every: Duration
+    build_backend: Callable[[], Logger], every: Duration, placement: Placement
 ) -> tuple[MetricRecorder, MetricRecorder, ActorProxy[RayMetricCollector]]:
     """One collector for the whole run, and a windowed view of it for each process that records.
 
@@ -77,7 +78,7 @@ def default_remote_logger(
             }
         )
 
-    collector = ray.remote(RayMetricCollector).options(**RayMetricCollector.RAY_OPTIONS).remote(build_collector)
+    collector = placement.apply(RayMetricCollector).remote(build_collector)
     actor = WindowedRecorder(RayMetricRecorder(collector, Origin.ACTOR), every)
     learner = WindowedRecorder(RayMetricRecorder(collector, Origin.LEARNER), every)
     return actor, learner, collector
