@@ -121,7 +121,7 @@ def test_ppos_own_update_rule_compiles_and_runs_under_a_data_parallel_mesh(
     failed at compile time — at the top of a training run, after everything else was placed."""
     apply_fn, params = network
     rollouts = PER_DEVICE * jax.local_device_count()
-    distributed = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS)  # ty: ignore[invalid-argument-type]
+    distributed = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS)
     mesh, model, data = distributed.shardings()
     state = PPOUpdateState(params, optimizer().init(params), jax.random.key(2))
 
@@ -142,7 +142,7 @@ def test_the_whole_learner_state_lands_replicated_and_not_only_its_parameters(
     shuffled with. The update is compiled expecting every one of them replicated, and a key that
     had landed split would shuffle each shard's minibatches differently."""
     apply_fn, params = network
-    _, model, _ = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS).shardings()  # ty: ignore[invalid-argument-type]
+    _, model, _ = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS).shardings()
     state = PPOUpdateState(params, optimizer().init(params), jax.random.key(2))
 
     assert replicated(jax.device_put(state, model), over=jax.local_device_count())
@@ -159,7 +159,7 @@ def test_the_batch_size_a_rule_declares_is_the_shard_it_will_see_and_not_the_who
 
     apply_fn, params = network
     rollouts = PER_DEVICE * jax.local_device_count()
-    distributed = DataParallelUpdateRule(rule(apply_fn, rollouts), AXIS)  # ty: ignore[invalid-argument-type]
+    distributed = DataParallelUpdateRule(rule(apply_fn, rollouts), AXIS)
     mesh, model, data = distributed.shardings()
     state = PPOUpdateState(params, optimizer().init(params), jax.random.key(2))
 

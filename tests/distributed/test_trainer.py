@@ -1,7 +1,8 @@
 """The learner's loop: pull a batch, update on it, publish the parameters, say what happened.
 
-Everything a Trainer holds is real here except replay, which is scripted so a test can say which
-batch arrived under which version and read back what was done with it. The `DataParallelUpdateRule`
+Everything a Trainer holds is real here except the two collaborators that are another process on
+a run: replay, scripted so a test can say which batch arrived under which Version, and the
+checkpointer, which keeps what it was posted rather than writing it. The `DataParallelUpdateRule`
 is the real one, over a rule small enough that a wrong batch is a wrong number rather than a
 slightly different loss; the `ParamStore` is the same in-process Store a Ray-placed one holds
 rather than reimplements; and the recorder is the far side of the run's one collector.
@@ -14,11 +15,11 @@ number rather than a plausible one.
 What is not here is anything about how a batch got to the learner or what the update means. Both
 have tests of their own; a Trainer is the seam between them, and the seam is what breaks: a batch
 built over a different sharding than the update was compiled against, a version subtracted from
-the wrong side, a replay server the driver never stopped.
+the wrong side, a replay server the driver never stopped, a final state the run never wrote.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, Protocol, cast
 
 import jax
 import jax.numpy as jnp
@@ -27,11 +28,13 @@ import optax
 import pytest
 from conftest import Recorded, replicated
 
+from brrrl.checkpointing.checkpointer import Config
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.metrics.collector import WindowedRecorder
 from brrrl.params.params import ParamStore
 from brrrl.types import Metrics, Params, PRNGKey, TrainerBatch, VersionedParams
+from brrrl.utils.duration import Duration, EveryTicks
 
 AXIS = "devices"
 ROWS = 4
@@ -53,6 +56,15 @@ DEPTH = [11, 22, 33]
 
 TIMED = {"traj_wait_time", "update_dispatch_time", "param_publish_time", "checkpointing_time"}
 PORT = 40000
+
+NEVER_FILLS = EveryTicks(1000)
+"""A window wider than any run here, so what a test reads back is what closing flushed."""
+
+TIMESTEPS_PER_DEVICE = 7
+"""Transitions one device's share of a batch was rolled out over. Unlike any device count the suite
+runs on, so a run's timestep that counted one device's rather than every device's is a wrong
+number rather than the same one."""
+
 COLLECTION = "params"
 """Flax nests every parameter under the collection it belongs to, and so does `Params`."""
 
@@ -83,8 +95,8 @@ class Decimals:
     off the one number. The mean is taken over the whole mesh, which is the update rule's job to
     make possible and not this rule's to check."""
 
-    def update(self, state: State, batch: jax.Array) -> tuple[State, Metrics]:
-        mean = jax.lax.pmean(jnp.mean(batch), AXIS)
+    def update(self, state: State, trajectory: jax.Array) -> tuple[State, Metrics]:
+        mean = jax.lax.pmean(jnp.mean(trajectory), AXIS)
         held = state.params[COLLECTION]
         folded = cast(jax.Array, held[SEEN]) * 10 + mean
         shaped = cast(jax.Array, held[SHAPED]) + mean
@@ -103,6 +115,48 @@ class Stopping:
 
     def close(self) -> None:
         self.closed = True
+
+
+class Save(NamedTuple):
+    """What a Trainer posted to be written, which is the whole of what it decides about a checkpoint."""
+
+    step: int
+    state: State
+    metadata: Config | None
+    force: bool
+
+
+@dataclass
+class Posted:
+    """The checkpointer as a Trainer holds one: saves are posted and forgotten, ``wait`` drains them.
+
+    Standing in for `brrrl.distributed.components.checkpointer.RayCheckpointer`, whose store is an
+    actor writing to disk on the far side of a Ray call. Which step a state was filed under and what
+    the run was said to have reached by then are only readable from this end; whether the interval
+    admitted the step is the checkpointer's own to decide and is tested where it lives.
+    """
+
+    saves: list[Save] = field(default_factory=list)
+    waits: int = 0
+
+    def save(
+        self,
+        step: int,
+        state: State,
+        metrics: Metrics | None = None,
+        *,
+        metadata: Config | None = None,
+        force: bool = False,
+    ) -> None:
+        self.saves.append(Save(step, state, metadata, force))
+
+    def wait(self) -> None:
+        self.waits += 1
+
+    @property
+    def during(self) -> list[Save]:
+        """The saves the loop posted, held apart from the one a run is forced to end on."""
+        return [save for save in self.saves if not save.force]
 
 
 @dataclass
@@ -127,13 +181,30 @@ class Scripted:
         return iter(self.batches)
 
 
+class InProcess(Protocol):
+    """A Trainer as a test holds one, which is not the view `ray.method` gives its methods.
+
+    That decorator leaves the function alone and declares the attribute to be the handle a placed
+    Component is reached through, which is what makes ``trainer.run.remote()`` check against an
+    `ActorProxy` and what makes calling one here look like calling a handle. Naming the surface a
+    test uses says so once instead of at every call.
+    """
+
+    state: State
+
+    def run(self) -> None: ...
+    def close(self) -> None: ...
+    def get_replay_addresses(self) -> list[str]: ...
+
+
 @dataclass
 class Wired:
     """One Trainer and everything it was built over, which is where the assertions are."""
 
-    trainer: Trainer[Any, Any]
+    trainer: InProcess
     replay: Scripted
     store: ParamStore
+    checkpointer: Posted
     collected: Recorded
     """Where the records land, held apart from the recorder because a window may sit between."""
 
@@ -152,21 +223,31 @@ def batches(health: list[Any] | None = None) -> list[TrainerBatch[Any]]:
     ]
 
 
-def build(feed: list[TrainerBatch[Any]] | None = None, window: int = 0) -> Wired:
+def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None = None) -> Wired:
     """The driver seeds the Store before placing anything, which is what the Version count is from.
 
     ``window`` puts a real `WindowedRecorder` between the Trainer and where the records land, which
-    is the chain a run builds; zero leaves the Trainer recording straight into it.
+    is the chain a run builds; None leaves the Trainer recording straight into it.
     """
     params: Params = {COLLECTION: {SEEN: jnp.float32(0.0), SHAPED: jnp.zeros(AWKWARD, jnp.float32)}}
     store = ParamStore(VersionedParams(params, 0))
     replay = Scripted(batches() if feed is None else feed)
     collected = Recorded()
-    recorder = WindowedRecorder(collected, window) if window else collected
+    recorder = WindowedRecorder(collected, window) if window is not None else collected
     rule = DataParallelUpdateRule(Decimals(), AXIS)
     state = State(params, optax.adam(1e-3).init(params), jax.random.key(3))
-    trainer = Trainer(len(replay.batches), state, rule, replay, lambda: store, recorder)  # ty: ignore[invalid-argument-type]
-    return Wired(trainer, replay, store, collected)
+    checkpointer = Posted()
+    trainer = Trainer(
+        len(replay.batches),
+        TIMESTEPS_PER_DEVICE,
+        state,
+        rule,
+        replay,  # ty: ignore[invalid-argument-type]
+        lambda: store,
+        recorder,
+        checkpointer,  # ty: ignore[invalid-argument-type]
+    )
+    return Wired(cast(InProcess, trainer), replay, store, checkpointer, collected)
 
 
 def folded(params: Params) -> float:
@@ -244,6 +325,44 @@ def test_a_learner_advances_no_step_of_its_own() -> None:
     assert wired.collected.transitions == [0] * len(MEANS)
 
 
+def test_every_update_posts_the_state_it_produced_to_be_written() -> None:
+    """A run that only wrote at the end is a run whose crash costs every update it had done. Which
+    of these reach the disk is the checkpointer's interval to decide; a step never posted cannot."""
+    wired = build()
+
+    wired.trainer.run()
+
+    assert [save.step for save in wired.checkpointer.during] == list(range(len(MEANS)))
+    assert [folded(save.state.params) for save in wired.checkpointer.during] == pytest.approx([1.0, 12.0, 123.0])
+
+
+def test_a_run_forces_its_last_state_out_and_waits_for_the_writes_to_land() -> None:
+    """The final state is the one a resume or an eval reads, and the interval will not have admitted
+    the step a run happened to stop on. Posted saves land in another process, so a run that returned
+    before they did leaves nothing but whichever earlier step the interval let through."""
+    wired = build()
+
+    wired.trainer.run()
+
+    final = wired.checkpointer.saves[-1]
+    assert final.force and folded(final.state.params) == pytest.approx(123.0)
+    assert wired.checkpointer.waits == 1
+
+
+def test_a_checkpoints_timestep_counts_what_every_device_collected_and_not_one_of_them() -> None:
+    """What a checkpoint says the run had reached is read against the actors' cumulative transitions
+    (ADR-0005), and a learner is told one device's share of a batch. There is a replay server per
+    device, so the share and the whole are the same number on the single device a configuration will
+    have been written on, and a resume from a run trained on more of them lands short."""
+    wired = build()
+
+    wired.trainer.run()
+
+    per_update = TIMESTEPS_PER_DEVICE * jax.local_device_count()
+    reached = [cast(Config, save.metadata)["timestep"] for save in wired.checkpointer.during]
+    assert reached == [per_update * (i + 1) for i in range(len(MEANS))]
+
+
 def test_the_state_a_learner_starts_from_is_replicated_onto_every_device() -> None:
     """``device_put`` against a replicated `NamedSharding` is what puts a whole copy of the model on
     each device, and the update is compiled expecting exactly that. A state left where it was built
@@ -300,7 +419,7 @@ def test_close_stops_every_replay_server_and_lets_go_of_the_recorder() -> None:
 def test_a_window_that_never_filled_still_reaches_the_collector_when_the_trainer_closes() -> None:
     """A learner records once an update, and a run that stops mid-window would otherwise lose every
     metric since the last flush — including the ones from the update it stopped on."""
-    wired = build(window=1000)
+    wired = build(window=NEVER_FILLS)
     wired.trainer.run()
     reached = len(wired.collected.records)
 
@@ -315,7 +434,7 @@ def test_a_metric_that_arrives_as_a_list_is_folded_like_any_other() -> None:
     """A learner forwards whatever the batch carried without meaning it first, and a replay metric
     sampled per buffer arrives as a list rather than a scalar. The window folds every value in it,
     so what reaches the backend is one number either way."""
-    wired = build(feed=batches([[1.0, 2.0, 3.0]] * len(MEANS)), window=1000)
+    wired = build(feed=batches([[1.0, 2.0, 3.0]] * len(MEANS)), window=NEVER_FILLS)
 
     wired.trainer.run()
     wired.trainer.close()

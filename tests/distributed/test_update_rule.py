@@ -64,12 +64,12 @@ class Squares:
 
     optimizer: optax.GradientTransformation
 
-    def update(self, state: State, batch: jax.Array) -> tuple[State, Metrics]:
-        loss = lambda params: jnp.mean(jnp.square(batch * params[COLLECTION][WEIGHT]))
+    def update(self, state: State, trajectory: jax.Array) -> tuple[State, Metrics]:
+        loss = lambda params: jnp.mean(jnp.square(trajectory * params[COLLECTION][WEIGHT]))
         grads = jax.grad(loss)(state.params)
         updates, opt_state = self.optimizer.update(grads, state.opt_state, state.params)
         params = cast(Params, optax.apply_updates(state.params, updates))
-        return State(params, opt_state), {"rows": jnp.float32(batch.shape[0]), "leading_row": batch[0]}
+        return State(params, opt_state), {"rows": jnp.float32(trajectory.shape[0]), "leading_row": trajectory[0]}
 
     def isvalid(self) -> bool:
         return True

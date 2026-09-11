@@ -18,6 +18,7 @@ Actor to stop. The last test here is that caller, and it is the shape a real run
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Protocol, cast
 
 import pytest
 from conftest import Recorded, settled
@@ -76,11 +77,26 @@ class Sending:
         self.closed = True
 
 
+class InProcess(Protocol):
+    """An Actor as a test holds one, which is not the view `ray.method` gives its methods.
+
+    That decorator leaves the function alone and declares the attribute to be the handle a placed
+    Component is reached through, which is what makes ``actor.run.remote()`` check against an
+    `ActorProxy` and what makes calling one here look like calling a handle. Naming the surface a
+    test uses says so once instead of at every call.
+    """
+
+    stop: bool
+
+    def run(self) -> None: ...
+    def close(self) -> None: ...
+
+
 @dataclass
 class Wired:
     """One Actor and the three collaborators it was built over, which is where the assertions are."""
 
-    actor: Actor
+    actor: InProcess
     roller: Rolling
     client: Sending
     recorder: Recorded
@@ -92,7 +108,7 @@ def build(roller: Rolling | None = None, recorder: Recorded | None = None) -> Wi
     could not have pickled."""
     roller = Rolling() if roller is None else roller
     client, recorder = Sending(), Recorded() if recorder is None else recorder
-    actor = Actor(lambda: roller, lambda: client, recorder)  # ty: ignore[invalid-argument-type]
+    actor = cast(InProcess, Actor(lambda: roller, lambda: client, recorder))  # ty: ignore[invalid-argument-type]
     roller.stop = actor.close
     return Wired(actor, roller, client, recorder)
 
