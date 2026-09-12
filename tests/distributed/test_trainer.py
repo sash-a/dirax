@@ -80,13 +80,19 @@ all, because a rank-0 leaf has no axis anyone could have split."""
 
 
 class State(NamedTuple):
-    """``device_put`` is handed the whole state, so the optimiser's own arrays and the key ride with
-    the parameters and have to land replicated alongside them. Nothing here reads them; they are
-    here because they are what a real state carries across that call."""
+    """The whole state is built under the placing `jit`, so the optimiser's own arrays and the key
+    ride with the parameters and have to land replicated alongside them. Nothing here reads them;
+    they are here because they are what a real state carries through that call."""
 
     params: Params
     opt_state: optax.OptState
     key: PRNGKey
+
+
+def initial_params() -> Params:
+    """The state a run starts from, held apart from the rule so the Store can be seeded with the
+    same numbers the Trainer is about to publish."""
+    return {COLLECTION: {SEEN: jnp.float32(0.0), SHAPED: jnp.zeros(AWKWARD, jnp.float32)}}
 
 
 @dataclass(frozen=True)
@@ -94,6 +100,12 @@ class Decimals:
     """Shifts the parameter a place and adds the batch's mean, so order and arrival are both read
     off the one number. The mean is taken over the whole mesh, which is the update rule's job to
     make possible and not this rule's to check."""
+
+    def init(self, key: PRNGKey) -> State:
+        """An optimiser state this rule never reads, because what a Trainer does with a state is
+        place the whole of it and a state of parameters alone would not show that."""
+        params = initial_params()
+        return State(params, optax.adam(1e-3).init(params), key)
 
     def update(self, state: State, trajectory: jax.Array) -> tuple[State, Metrics]:
         mean = jax.lax.pmean(jnp.mean(trajectory), AXIS)
@@ -224,26 +236,26 @@ def batches(health: list[Any] | None = None) -> list[TrainerBatch[Any]]:
 
 
 def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None = None) -> Wired:
-    """The driver seeds the Store before placing anything, which is what the Version count is from.
+    """The Store is seeded here so the Version the Trainer's opening publish lands on is stated.
+    A run's store starts empty and the Learner's own publish is its first entry; a `ParamStore`
+    cannot hold nothing, so this stands in at the Version before it.
 
     ``window`` puts a real `WindowedRecorder` between the Trainer and where the records land, which
     is the chain a run builds; None leaves the Trainer recording straight into it.
     """
-    params: Params = {COLLECTION: {SEEN: jnp.float32(0.0), SHAPED: jnp.zeros(AWKWARD, jnp.float32)}}
-    store = ParamStore(VersionedParams(params, 0))
+    store = ParamStore(VersionedParams(initial_params(), 0))
     replay = Scripted(batches() if feed is None else feed)
     collected = Recorded()
     recorder = WindowedRecorder(collected, window) if window is not None else collected
     rule = DataParallelUpdateRule(Decimals(), AXIS)
-    state = State(params, optax.adam(1e-3).init(params), jax.random.key(3))
     checkpointer = Posted()
     trainer = Trainer(
         len(replay.batches),
         TIMESTEPS_PER_DEVICE,
-        state,
+        jax.random.key(3),
         rule,
         replay,  # ty: ignore[invalid-argument-type]
-        lambda: store,
+        store,
         recorder,
         checkpointer,  # ty: ignore[invalid-argument-type]
     )
@@ -364,13 +376,13 @@ def test_a_checkpoints_timestep_counts_what_every_device_collected_and_not_one_o
 
 
 def test_the_state_a_learner_starts_from_is_replicated_onto_every_device() -> None:
-    """``device_put`` against a replicated `NamedSharding` is what puts a whole copy of the model on
-    each device, and the update is compiled expecting exactly that. A state left where it was built
-    is a transfer per step, and it is the case worth naming: it reads as fully replicated to its own
-    sharding, so only the count of devices holding a copy tells the two apart.
+    """``out_shardings`` on the builder is what puts a whole copy of the model on each device, and
+    the update is compiled expecting exactly that. A state left where it was built is a transfer per
+    step, and it is the case worth naming: it reads as fully replicated to its own sharding, so only
+    the count of devices holding a copy tells the two apart.
 
-    The whole state, not its parameters: that is what the call is given, and the optimiser's moments
-    are the larger half of it."""
+    The whole state, not its parameters: that is what the builder returns, and the optimiser's
+    moments are the larger half of it."""
     wired = build()
 
     assert replicated(wired.trainer.state, over=jax.local_device_count())

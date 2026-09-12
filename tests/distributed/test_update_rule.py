@@ -30,7 +30,7 @@ from jax.sharding import Mesh, PartitionSpec
 from numpy.typing import ArrayLike
 
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
-from brrrl.types import Metrics, Params, UpdateFn
+from brrrl.types import Metrics, Params, PRNGKey, UpdateFn
 from brrrl.utils.optax import mean_by_axis
 
 COLLECTION, WEIGHT = "params", "w"
@@ -64,6 +64,12 @@ class Squares:
 
     optimizer: optax.GradientTransformation
 
+    def init(self, key: PRNGKey) -> State:
+        """``key`` goes unread: the one weight this fits starts where a reader can do the
+        arithmetic from, rather than anywhere a sample would put it."""
+        params: Params = {COLLECTION: {WEIGHT: jnp.float32(1.0)}}
+        return State(params, self.optimizer.init(params))
+
     def update(self, state: State, trajectory: jax.Array) -> tuple[State, Metrics]:
         loss = lambda params: jnp.mean(jnp.square(trajectory * params[COLLECTION][WEIGHT]))
         grads = jax.grad(loss)(state.params)
@@ -86,8 +92,7 @@ def rule(all_reduce: bool = True) -> DataParallelUpdateRule[State, Any]:
 
 
 def start(all_reduce: bool = True) -> State:
-    params: Params = {COLLECTION: {WEIGHT: jnp.float32(1.0)}}
-    return State(params, optimizer(all_reduce).init(params))
+    return Squares(optimizer(all_reduce)).init(jax.random.key(0))
 
 
 def number(value: ArrayLike) -> float:

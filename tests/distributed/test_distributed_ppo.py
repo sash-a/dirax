@@ -30,7 +30,7 @@ from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, mak
 from brrrl.algorithms.ppo.types import PPOApply, PPOTrajectory, PPOTransition, PPOUpdateState, example
 from brrrl.distributed.components.echo import ReplayServer, echo_example
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
-from brrrl.types import Params, Rollout
+from brrrl.types import Params, PRNGKey, Rollout
 from brrrl.utils.optax import mean_by_axis
 
 AXIS = "devices"
@@ -54,9 +54,16 @@ def optimizer() -> optax.GradientTransformation:
     return optax.chain(mean_by_axis(AXIS), optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(1e-3, eps=ADAM_EPS))
 
 
+def init_params(key: PRNGKey) -> Params:
+    """What a rule takes in place of an obs space: an Assembly paired with an example to trace it
+    on. Built fresh rather than taken from the fixture, which the same key makes the same params as.
+    """
+    return make_network(OBS_SPACE, ACT_SPACE).init(key, OBS_SPACE.sample())
+
+
 def rule(apply_fn: PPOApply, rollouts: int) -> PPOUpdateRule:
     """``rollouts`` is per device: what one shard of the batch holds once it has been merged."""
-    return PPOUpdateRule(apply_fn, optimizer(), rollouts * NUM_ENVS, ROLLOUT_LEN, EPOCHS, MINIBATCHES)
+    return PPOUpdateRule(apply_fn, init_params, optimizer(), rollouts * NUM_ENVS, ROLLOUT_LEN, EPOCHS, MINIBATCHES)
 
 
 def blank() -> PPOTrajectory:
@@ -137,15 +144,19 @@ def test_ppos_own_update_rule_compiles_and_runs_under_a_data_parallel_mesh(
 def test_the_whole_learner_state_lands_replicated_and_not_only_its_parameters(
     network: tuple[PPOApply, Params],
 ) -> None:
-    """`Trainer` puts the state, not the parameters, and PPO's is mostly not parameters: an adam
+    """`Trainer` builds the state, not the parameters, and PPO's is mostly not parameters: an adam
     chain's step count and its two moment trees ride along, and so does the PRNG key the epochs are
     shuffled with. The update is compiled expecting every one of them replicated, and a key that
-    had landed split would shuffle each shard's minibatches differently."""
-    apply_fn, params = network
-    _, model, _ = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS).shardings()
-    state = PPOUpdateState(params, optimizer().init(params), jax.random.key(2))
+    had landed split would shuffle each shard's minibatches differently.
 
-    assert replicated(jax.device_put(state, model), over=jax.local_device_count())
+    Through the rule's own `init` rather than a state placed after the fact: building into the
+    sharding is the whole reason that call takes one, and a typed key is the leaf that reads
+    differently across the two."""
+    apply_fn, _ = network
+    distributed = DataParallelUpdateRule(rule(apply_fn, PER_DEVICE), AXIS)
+    _, model, _ = distributed.shardings()
+
+    assert replicated(distributed.init(jax.random.key(2), model), over=jax.local_device_count())
 
 
 def test_the_batch_size_a_rule_declares_is_the_shard_it_will_see_and_not_the_whole_batch(

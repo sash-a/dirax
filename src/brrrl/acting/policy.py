@@ -29,8 +29,8 @@ class Policy[Obs, O: PolicyOutput](Protocol):
 class LocalPolicy[Obs, O: PolicyOutput]:
     """Owns its params and its key, so a Roller holds no jax state and no param concept.
 
-    Its first params are pulled on construction rather than at the first Sync point, because the
-    driver has already seeded the Store — which is what lets a Sync point never block.
+    Its first params are pulled on construction rather than at the first Sync point, so the wait
+    for a Learner that has not published yet is paid once, here, and a Sync point never blocks.
     """
 
     def __init__(self, act_fn: ActFn[Obs, O], source: ParamSource, key: PRNGKey) -> None:

@@ -5,7 +5,7 @@ import jax
 from jax.experimental import mesh_utils
 from jax.sharding import Mesh, PartitionSpec
 
-from brrrl.types import Metrics, Trajectory, UpdateFn, UpdateRule, UpdateState
+from brrrl.types import Metrics, PRNGKey, Trajectory, UpdateFn, UpdateRule, UpdateState
 
 
 class DistributedUpdateRule[S: UpdateState, T: Trajectory](Protocol):
@@ -18,6 +18,10 @@ class DistributedUpdateRule[S: UpdateState, T: Trajectory](Protocol):
 
     def shardings(self) -> tuple[Mesh, jax.NamedSharding, jax.NamedSharding]:
         """Creates a tuple of (mesh, model_sharding, data_sharding)."""
+        ...
+
+    def init(self, key: PRNGKey, model_sharding: jax.NamedSharding) -> S:
+        """Creates the update state used for training and shards it."""
         ...
 
 
@@ -51,3 +55,6 @@ class DataParallelUpdateRule[S: UpdateState, T: Trajectory]:
         data_sharding = jax.NamedSharding(mesh, data_spec)
 
         return mesh, model_sharding, data_sharding
+
+    def init(self, key: PRNGKey, model_sharding: jax.NamedSharding) -> S:
+        return jax.jit(self.rule.init, out_shardings=model_sharding)(key)

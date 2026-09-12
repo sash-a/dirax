@@ -6,7 +6,6 @@ from ray import ObjectRef
 from ray.actor import ActorProxy
 
 from brrrl.distributed.placement.component import Behaviour
-from brrrl.params.params import ParamStore
 from brrrl.types import Params, VersionedParams
 from brrrl.utils.duration import Duration, EveryTicks, Schedule
 
@@ -14,61 +13,57 @@ from brrrl.utils.duration import Duration, EveryTicks, Schedule
 class RayParamStore:
     """The one place live params exist; the Learner writes, Policies read.
 
-    Holds the in-process Store rather than reimplementing it, and hands each reader its own
-    edge-triggered wake.
+    Empty until the Learner's opening publish, because params are built where they are trained
+    rather than shipped from the driver.
     """
 
     RAY_OPTIONS: ClassVar[Behaviour] = {"max_restarts": 0}
 
-    def __init__(self, store: ParamStore, reader_ids: list[int]) -> None:
-        self.store = store
+    def __init__(self, reader_ids: list[int]) -> None:
+        self.latest: VersionedParams | None = None
         self._fresh: dict[int, asyncio.Queue[None]] = {reader_id: asyncio.Queue(1) for reader_id in reader_ids}
-        for queue in self._fresh.values():
-            queue.put_nowait(None)  # The driver seeded the Store, so no reader waits for its first params.
 
     @ray.method
-    async def publish(self, params: Params) -> int:
-        version = self.store.publish(params)
+    async def publish(self, params: VersionedParams) -> None:
+        """Takes the Version it is given: the writer mints them, so no reader has to ask for one."""
+        self.latest = params
         for queue in self._fresh.values():
             if queue.empty():  # A reader two publishes behind still only needs waking once.
                 queue.put_nowait(None)
-        return version
-
-    @ray.method
-    async def version(self) -> int:
-        """The current Version, for a caller that wants it without spending a reader's wake."""
-        return self.store.get(block=True).version
 
     @ray.method
     async def get(self, reader_id: int) -> VersionedParams:
         """Parks until a publish this reader has not been woken for lands."""
         await self._fresh[reader_id].get()
-        return self.store.get(block=True)
+        assert self.latest is not None  # A wake is only ever put after a publish has set this.
+        return self.latest
+
+    @ray.method
+    def version(self) -> int:
+        return self.latest.version if self.latest is not None else 0
 
 
 class RayParamSink:
-    """The writer into the ``RayParamStore``
+    """The only writer into a ``RayParamStore``, and so the run's version authority."""
 
-    Duplicated the version that lives in the store that we don't need to wait for a round trip to
-    return the version when sending params. Only right while it is the store's only writer.
-    """
-
-    def __init__(self, store: ActorProxy[RayParamStore], every: Duration | None = None) -> None:
+    def __init__(self, store: ActorProxy[RayParamStore], every: Duration | None = None, version: int = -1) -> None:
         """
         The writer into the ``RayParamStore``
 
         Args:
             store: the remote store where params are kept.
             every: how frequently to push params, defaults to every call to `publish`.
+            version: the Version the last publish carried. Left at -1 a fresh run's opening publish
+              is Version 0; a resumed run states what its checkpoint left off at.
         """
         self.store = store
         self.every = Schedule(every or EveryTicks(1))
-        self.version = ray.get(self.store.version.remote())
+        self.version = version
 
     def publish(self, params: Params) -> int:
+        self.version += 1
         if self.every.due():
-            self.store.publish.remote(params)
-            self.version += 1
+            self.store.publish.remote(VersionedParams(params, self.version))
 
         return self.version
 

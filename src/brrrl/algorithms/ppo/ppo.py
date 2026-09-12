@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
@@ -67,6 +68,7 @@ def explained_variance(targets: Array, predictions: Array, mask: Array) -> jax.A
 @dataclass(frozen=True)
 class PPOUpdateRule:
     apply_fn: PPOApply
+    init_params: Callable[[PRNGKey], Params]
     optimizer: optax.GradientTransformation
     batch_size: int
     rollout_length: int
@@ -78,6 +80,11 @@ class PPOUpdateRule:
     vf_coef: float = 0.5
     gamma: float = 0.99
     gae_lambda: float = 0.95
+
+    def init(self, key: PRNGKey) -> PPOUpdateState:
+        param_key, state_key = jax.random.split(key)
+        params = self.init_params(param_key)
+        return PPOUpdateState(params, self.optimizer.init(params), state_key)
 
     def isvalid(self) -> bool:
         return (
@@ -244,7 +251,7 @@ def main() -> None:
     env_name = "Acrobot-v1"
 
     key = jax.random.key(seed)
-    weights_key, policy_key, update_key = jax.random.split(key, 3)
+    init_key, policy_key = jax.random.split(key)
 
     # if the env has an action mask then wrap in brrrl.wrappers.action_mask.ActionMask
     make_env = lambda: rescaled(gym.make(env_name))
@@ -257,12 +264,11 @@ def main() -> None:
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
-    params = network.init(weights_key, env.observation_space.sample())
-    param_source = ParamStore(VersionedParams(params, 0))
+    obs_example = env.observation_space.sample()
+    init_params = lambda weights_key: network.init(weights_key, obs_example)
     # Annealed to zero across the run
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
-    opt_state = opt.init(params)
 
     def actor_forward(params, observations, key):
         distr, value = apply_fn(params, observations)
@@ -275,13 +281,15 @@ def main() -> None:
             obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob
         )
 
-    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
-    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
-    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    updater = PPOUpdateRule(apply_fn, init_params, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
-    update_state = PPOUpdateState(params, opt_state, update_key)
+    update_state = updater.init(init_key)
     update_fn = jax.jit(updater.update)
+
+    param_source = ParamStore(VersionedParams(update_state.params, 0))
+    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
+    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
 
     actor_recorder, learner_recorder = default_logger(
         MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),

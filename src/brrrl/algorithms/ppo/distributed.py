@@ -34,8 +34,6 @@ from brrrl.distributed.placement.preflight import Placed, preflight
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
-from brrrl.params.params import ParamStore
-from brrrl.types import VersionedParams
 from brrrl.utils.duration import EveryTicks
 from brrrl.utils.optax import mean_by_axis
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
@@ -128,7 +126,7 @@ def main():
 
     ray.init()
     key = jax.random.key(1)
-    weights_key, policy_key, update_key = jax.random.split(key, 3)
+    policy_key, trainer_key = jax.random.split(key)
 
     make_env = lambda: rescaled(gym.make(env_name))
     env = make_env()
@@ -138,8 +136,6 @@ def main():
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
-    # TODO: this should probably be done in learner, e.g for a very big model the head node may not have enough RAM
-    params = network.init(weights_key, env.observation_space.sample())
 
     # --- Learner ---
     # TODO(learner):
@@ -150,12 +146,14 @@ def main():
         optax.clip_by_global_norm(MAX_GRAD_NORM),
         optax.adam(schedule, eps=ADAM_EPS),
     )
-    opt_state = opt.init(params)
-
-    rule = PPOUpdateRule(apply_fn, opt, batch_size * num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    obs_example = env.observation_space.sample()
+    init_params = lambda weights_key: network.init(weights_key, obs_example)
+    rule = PPOUpdateRule(
+        apply_fn, init_params, opt, batch_size * num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma
+    )
     if not rule.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
-    update_state = PPOUpdateState(params, opt_state, update_key)
+
     distributed_rule = DataParallelUpdateRule(rule, shard_axis_name)
 
     replay = ReplayServer(table_size, batch_size, n_prefetch, PPOTrajectory(**example_transition))
@@ -165,7 +163,7 @@ def main():
 
     # TODO(params):
     #  Mirror per actor node -> in actor code
-    param_store = placements.params.apply(RayParamStore).remote(ParamStore(VersionedParams(params, 0)), actor_ids)
+    param_store = placements.params.apply(RayParamStore).remote(actor_ids)
 
     save_path = get_save_path().resolve()
     checkpoint_store = placements.checkpoints.apply(CheckpointStore).remote(
@@ -176,10 +174,10 @@ def main():
     trainer: ActorProxy[Trainer] = placements.trainer.apply(Trainer).remote(
         num_updates,
         timesteps_per_device,
-        update_state,
+        trainer_key,
         distributed_rule,
         replay,
-        lambda: RayParamSink(param_store),
+        RayParamSink(param_store),
         learner_recorder,
         checkpointer,
     )

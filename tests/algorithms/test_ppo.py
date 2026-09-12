@@ -32,7 +32,7 @@ from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.ppo import PPOApply, PPONetwork, PPOUpdateRule, explained_variance, make_network, normalise
 from brrrl.algorithms.ppo.types import PPOBatch, PPOTrajectory, PPOTransition, PPOUpdateState, example
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
-from brrrl.types import TRANSITIONS, Array
+from brrrl.types import TRANSITIONS, Array, Params, PRNGKey
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 
 BATCH, ROLLOUT, OBS, ACTIONS = 4, 8, 5, 3
@@ -106,10 +106,17 @@ EVERY = {
 }
 
 
-def rule_over(network: nn.Module) -> PPOUpdateRule:
+def initialiser(space: Space, network: nn.Module) -> Callable[[PRNGKey], Params]:
+    """What a rule takes in place of an obs space: an Assembly paired with an example to trace it
+    on. A network is shape-polymorphic, so neither half means `init` without the other."""
+    return lambda key: network.init(key, space.observation(jnp.zeros(shaped(space, 1))))
+
+
+def rule_over(space: Space, network: nn.Module) -> PPOUpdateRule:
     """The rule under test, over whichever Assembly it is handed."""
     return PPOUpdateRule(
         apply_fn=cast(PPOApply, network.apply),
+        init_params=initialiser(space, network),
         optimizer=optax.adam(1e-3),
         policy_clip_eps=0.2,
         value_clip_eps=0.2,
@@ -167,7 +174,7 @@ def network(space: Space) -> nn.Module:
 
 @pytest.fixture(scope="module")
 def params(space: Space, network: nn.Module):
-    return network.init(jax.random.key(0), space.observation(jnp.zeros(shaped(space, 1))))
+    return initialiser(space, network)(jax.random.key(0))
 
 
 @pytest.fixture(scope="module")
@@ -178,8 +185,8 @@ def apply_fn(network: nn.Module) -> PPOApply:
 
 
 @pytest.fixture(scope="module")
-def rule(network: nn.Module) -> PPOUpdateRule:
-    return rule_over(network)
+def rule(space: Space, network: nn.Module) -> PPOUpdateRule:
+    return rule_over(space, network)
 
 
 def stacked(trajectory: PPOTrajectory) -> PPOTrajectory:
@@ -541,8 +548,8 @@ def fresh_loss(space: Space) -> tuple[jax.Array, dict]:
     the fixtures: what a fresh policy's entropy reads is the one thing the two do not share.
     """
     network = make_network(space.observation_space, space.action_space)
-    params = network.init(jax.random.key(0), space.observation(jnp.zeros(shaped(space, 1))))
-    rule = rule_over(network)
+    params = initialiser(space, network)(jax.random.key(0))
+    rule = rule_over(space, network)
     return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(space, network, params))))
 
 

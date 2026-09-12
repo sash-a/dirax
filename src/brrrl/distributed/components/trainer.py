@@ -1,7 +1,5 @@
-from collections.abc import Callable
 from typing import ClassVar
 
-import jax
 import numpy as np
 import ray
 
@@ -12,7 +10,7 @@ from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricRecorder
 from brrrl.metrics.timer import AggregatedElapsed, Timer
 from brrrl.params.params import ParamSink
-from brrrl.types import Trajectory, UpdateState
+from brrrl.types import PRNGKey, Trajectory, UpdateState
 
 
 class Trainer[S: UpdateState, T: Trajectory]:
@@ -24,34 +22,29 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self,
         num_updates: int,
         timesteps_per_device: int,
-        state: S,
+        key: PRNGKey,
         rule: DistributedUpdateRule[S, T],
         replay: ReplayServer,
-        # TODO: give sink a send period or make a windowed sink
-        #  does this need to be a factory, it's gonna hold a ref to store
-        make_param_sink: Callable[[], ParamSink],
+        param_sink: ParamSink,
         metric_recorder: MetricRecorder,
         checkpointer: RayCheckpointer[S],
     ):
+        mesh, model_sharding, data_sharding = rule.shardings()
         self.num_updates = num_updates
+        self.timesteps_per_update = timesteps_per_device * data_sharding.mesh.devices.size
+        self.state = rule.init(key, model_sharding)
 
-        self.param_sink = make_param_sink()
-        self.param_sink.publish(state.params)
+        self.param_sink = param_sink
+        self.param_sink.publish(self.state.params)  # Ahead of the compile: every Actor waits on this one.
 
         self.metric_recorder = metric_recorder
         self.timer = Timer(AggregatedElapsed)
-
         self.checkpointer = checkpointer
 
-        mesh, model_sharding, data_sharding = rule.shardings()
         self.update_fn = rule.compiled(mesh, model_sharding, data_sharding)
 
         self.replay_servers = replay.servers(list(data_sharding.mesh.devices.flat))
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
-
-        self.timesteps_per_update = timesteps_per_device * len(self.replay_servers)
-
-        self.state = jax.device_put(state, model_sharding)
 
     @ray.method
     def run(self) -> None:
