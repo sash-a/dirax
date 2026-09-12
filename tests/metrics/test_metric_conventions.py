@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 import brrrl.metrics
-from brrrl.metrics.logger import Logger, NamespacedProcessor, WindowedProcessor
+from brrrl.metrics.logger import Logger, MultiLogger, NamespacedProcessor
 from brrrl.metrics.stdout import StdoutLogger
 
 FORBIDDEN_IMPORTS = ("ray", "brrrl.distributed", "brrrl.algorithms")
@@ -26,7 +26,7 @@ THE_STEP = "step"
 
 def implementations() -> list[type]:
     """Every Logger in the package, with the optional backends included where they are installed."""
-    found: list[type] = [StdoutLogger, NamespacedProcessor, WindowedProcessor]
+    found: list[type] = [StdoutLogger, NamespacedProcessor, MultiLogger]
     for package, backend in (("mlflow", "MLflowLogger"), ("wandb", "WandbLogger")):
         with suppress(ImportError):
             found.append(getattr(importlib.import_module(f"brrrl.metrics.{package}"), backend))

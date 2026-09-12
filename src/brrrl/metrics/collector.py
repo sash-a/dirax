@@ -4,8 +4,10 @@ from typing import Protocol
 
 from etils import epath
 
+from brrrl.metrics.accumulator import MetricAccumulator
 from brrrl.metrics.logger import Logger
 from brrrl.types import Metrics
+from brrrl.utils.duration import Duration, Schedule
 
 
 class Origin(StrEnum):
@@ -23,6 +25,14 @@ class MetricRecorder(Protocol):
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         """File the artifact at ``path`` under ``directory``. Carries no Step; it names a place, not a moment."""
+        ...
+
+    def close(self) -> None:
+        """Flush whatever this recorder is holding.
+
+        Only what this end owns: a collector shared by every recording process is closed by the
+        driver that placed it, never by one of the nine processes that happens to finish first.
+        """
         ...
 
 
@@ -58,3 +68,47 @@ class LocalMetricRecorder:
 
     def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
         self.collector.collect_artifact(self.origin, path, directory)
+
+    def close(self) -> None:
+        """The collector is this process's own, so closing the recorder closes it."""
+        self.collector.close()
+
+
+class WindowedRecorder:
+    """Folds records and forwards their summary once every ``every`` of them."""
+
+    def __init__(self, recorder: MetricRecorder, every: Duration, verbose: bool = False, transitions: int = 0):
+        self.recorder = recorder
+        self.every = Schedule(every)
+        self.verbose = verbose
+        self.transitions = transitions
+        self.accumulators = {}
+
+    def record(self, metrics: Metrics, num_transitions: int = 0) -> None:
+        for key, values in metrics.items():
+            self.accumulators.setdefault(key, MetricAccumulator()).fold(values)
+        self.transitions += num_transitions
+
+        if self.every.due():
+            self.flush()
+
+    def record_artifact(self, path: epath.Path, directory: str | None = None) -> None:
+        """Artifacts have nothing to fold, so they skip the window."""
+        self.recorder.record_artifact(path, directory)
+
+    def flush(self) -> None:
+        """Forwards the window, carrying the transitions it spanned so the step clock stays exact."""
+        accumulators, self.accumulators = self.accumulators, {}
+        transitions, self.transitions = self.transitions, 0
+        summary = {
+            f"{key}/{stat}": value
+            for key, accumulator in accumulators.items()
+            for stat, value in accumulator.summary(self.verbose).items()
+        }
+        if summary or transitions:
+            self.recorder.record(summary, transitions)
+
+    def close(self) -> None:
+        """Flushes the partial window and closes what it wraps."""
+        self.flush()
+        self.recorder.close()

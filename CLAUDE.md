@@ -11,7 +11,7 @@ Neural networks in Flax.
 ## Coding style
 We only have final classes (no inheritance). We use traits/interfaces instead.
 We strongly favour composition for decoupling and code re-use.
-If you have to write a long comment to describe code you have written it poorly.
+If you have to write a long comment to describe code, you have written it poorly.
 
 ## Agent skills
 

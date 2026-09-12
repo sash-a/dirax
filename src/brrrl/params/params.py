@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal, Protocol, overload
 
-from brrrl.types import Params, Version, VersionedParams
+from brrrl.types import Params, VersionedParams
 
 
 class ParamSource(Protocol):
@@ -21,13 +21,13 @@ class ParamSource(Protocol):
 
 
 class ParamSink(Protocol):
-    def publish(self, params: Params) -> Version:
+    def publish(self, params: Params) -> int:
         """Store ``params`` under the next Version, and report which one that was."""
         ...
 
 
 @dataclass
-class InMemoryParamStore:
+class ParamStore:
     """The one place live params exist in a process. Seeded by the driver, so no reader waits.
 
     Its Version is the run's monotonic authority: a resumed run seeds the count it left off at.
@@ -39,6 +39,6 @@ class InMemoryParamStore:
         """Never None: nothing can land while a caller in this process waits, so nothing is waited on."""
         return self.params
 
-    def publish(self, params: Params) -> Version:
+    def publish(self, params: Params) -> int:
         self.params = VersionedParams(params, self.params.version + 1)
         return self.params.version

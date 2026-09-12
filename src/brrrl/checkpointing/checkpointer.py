@@ -1,22 +1,52 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol, final
+from typing import Any, NamedTuple, Protocol, final
 
 import orbax.checkpoint as ocp
 from etils import epath
 
 from brrrl.metrics.scalar import scalars
-from brrrl.types import Metrics
+from brrrl.types import Metrics, UpdateState
 
 type Config = Mapping[str, Any]
-type State = Mapping[str, Any]
 
 
-class Checkpointer(Protocol):
+class StateLayout[S: UpdateState](Protocol):
+    """Methods that transform an `UpdateState` to and from a checkpointable `Mapping`"""
+
+    @property
+    def items(self) -> tuple[str, ...]: ...
+    def to_items(self, state: S) -> Mapping[str, Any]: ...
+    def from_items(self, loaded: Mapping[str, Any]) -> S: ...
+
+
+@dataclass
+class NamedTupleLayout[S: NamedTuple]:
+    """Transforms an `UpdateState` backed by a `NamedTuple` to/from a checkpointable `Mapping`.
+
+    Bound on `NamedTuple` rather than `UpdateState`: a NamedTuple is already everything this needs,
+    and the checkpointer it is handed to is what insists on the state being an `UpdateState`.
+    """
+
+    state_type: type[S]
+
+    @property
+    def items(self) -> tuple[str, ...]:
+        return self.state_type._fields
+
+    def to_items(self, state: S) -> Mapping[str, Any]:
+        return state._asdict()
+
+    def from_items(self, loaded: Mapping[str, Any]) -> S:
+        return self.state_type(**loaded)
+
+
+class Checkpointer[S: UpdateState](Protocol):
     def save(
         self,
         step: int,
-        state: State,
+        state: S,
         metrics: Metrics | None = None,
         *,
         metadata: Config | None = None,
@@ -26,7 +56,7 @@ class Checkpointer(Protocol):
 
         Args:
             step: Step to file the checkpoint under. Steps at or below the latest are skipped.
-            state: One pytree per item name, keyed by item.
+            state: The run's state, as one pytree.
             metrics: Values describing this checkpoint, stored beside it and used to rank it.
             metadata: Bookkeeping filed with this checkpoint, read back without restoring it.
             force: Save regardless of the interval, for a run's final checkpoint.
@@ -48,16 +78,16 @@ class Checkpointer(Protocol):
         """
         ...
 
-    def load(self, step: int | None = None, abstract: State | None = None) -> State:
+    def load(self, step: int | None = None, abstract: S | None = None) -> S:
         """Read back a checkpoint.
 
         Args:
             step: Step to read, defaulting to the latest saved.
-            abstract: Pytrees of ``jax.ShapeDtypeStruct`` keyed by item, naming what to restore
-                onto. Also selects which items are read, so pass one to leave the rest on disk.
+            abstract: The state's shape as ``jax.ShapeDtypeStruct`` leaves, naming what to restore
+                onto. Leaves marked ``ocp.PLACEHOLDER`` are left on disk.
 
         Returns:
-            One pytree per item read, keyed by item.
+            The state.
         """
         ...
 
@@ -81,7 +111,7 @@ class Checkpointer(Protocol):
         ...
 
 
-def _handler_registry(items: Sequence[str]) -> ocp.DefaultCheckpointHandlerRegistry:
+def _handler_registry(items: tuple[str, ...]) -> ocp.DefaultCheckpointHandlerRegistry:
     handler = ocp.PyTreeCheckpointHandler()
     registry = ocp.DefaultCheckpointHandlerRegistry()
     for item in items:
@@ -91,16 +121,17 @@ def _handler_registry(items: Sequence[str]) -> ocp.DefaultCheckpointHandlerRegis
 
 
 @final
-class OrbaxCheckpointer:
+class OrbaxCheckpointer[S: UpdateState]:
     """Saves a run's state as orbax checkpoints under one local directory.
 
-    Items are fixed at construction so callers pass plain pytrees and never orbax's args vocabulary.
+    A state goes in and comes out whole; the ``layout`` is what knows it is filed as one item per
+    part, so callers never meet orbax's args vocabulary and never name an item themselves.
     """
 
     def __init__(
         self,
         directory: epath.PathLike,
-        items: Sequence[str],
+        layout: StateLayout[S],
         *,
         config: Config | None = None,
         save_every: int = 1,
@@ -112,8 +143,7 @@ class OrbaxCheckpointer:
         """
         Args:
             directory: Root the checkpoints are written under, created if missing.
-            items: Names of the pytrees written each step, fixed for the run. Each gets its own
-                subdirectory, so ``load`` can read one back without materialising the rest.
+            layout: `StateLayout` that transforms `UpdateState` to/from checkpointable `Mappings`.
             config: Run config filed once as checkpoint metadata. Must be JSON-serialisable.
             save_every: Steps between saves. A save also happens whenever preemption is detected.
             keep_latest: How many of the most recent checkpoints survive garbage collection.
@@ -126,10 +156,10 @@ class OrbaxCheckpointer:
         if keep_best and best_metric is None:
             raise ValueError("keep_best needs a best_metric to rank checkpoints by")
 
-        self.items = tuple(items)
-        self._item_names = frozenset(self.items)
         best_fn = (lambda metrics: metrics[best_metric]) if best_metric else None
         self._ranked = best_fn is not None
+
+        self.layout = layout
 
         # Latest is always kept so a resume can find the step it left off at.
         preserve: list[ocp.checkpoint_managers.PreservationPolicy] = [
@@ -161,14 +191,14 @@ class OrbaxCheckpointer:
         self._manager = ocp.CheckpointManager(
             epath.Path(directory).resolve(),
             options=options,
-            handler_registry=_handler_registry(self.items),
+            handler_registry=_handler_registry(layout.items),
             metadata=config,
         )
 
     def save(
         self,
         step: int,
-        state: State,
+        state: S,
         metrics: Metrics | None = None,
         *,
         metadata: Config | None = None,
@@ -178,7 +208,7 @@ class OrbaxCheckpointer:
 
         Args:
             step: Step to file the checkpoint under. Steps at or below the latest are skipped.
-            state: One pytree per name in ``items`` — all of them, or this raises.
+            state: The run's state, as one pytree.
             metrics: Stored with the checkpoint and ranked by ``best_metric``. Each value is
                 reduced to a single float, so arrays are meaned.
             metadata: Small JSON-serialisable bookkeeping — step counters and the like. Rides in
@@ -187,16 +217,13 @@ class OrbaxCheckpointer:
 
         Returns:
             Whether a checkpoint was written.
-
-        Raises:
-            ValueError: If ``state`` does not carry exactly the item names given at construction.
         """
-        if state.keys() != self._item_names:
-            raise ValueError(f"Expected items {self.items}, got {tuple(state)}")
         # Ask before packing: metrics are device arrays, and reading them stalls on a transfer.
         if not force and not self._manager.should_save(step):
             return False
-        args = ocp.args.Composite(**{item: ocp.args.PyTreeSave(tree) for item, tree in state.items()})
+
+        checkpointable = {key: ocp.args.PyTreeSave(tree) for key, tree in self.layout.to_items(state).items()}
+        args = ocp.args.Composite(**checkpointable)
         return self._manager.save(
             step,
             args=args,
@@ -204,6 +231,26 @@ class OrbaxCheckpointer:
             custom_metadata=dict(metadata) if metadata else None,
             force=force,
         )
+
+    def load(self, step: int | None = None, abstract: S | None = None) -> S:
+        """Read back a checkpoint.
+
+        Args:
+            step: Step to read, defaulting to the latest saved.
+            abstract: A state of ``jax.ShapeDtypeStruct`` leaves.
+        Returns:
+            The state, rebuilt by the layout from the items on disk.
+
+        Raises:
+            ValueError: If no ``step`` is given and the directory holds no checkpoints.
+        """
+        step = self.latest if step is None else step
+        if step is None:
+            raise ValueError(f"No checkpoint to load from {self.directory}")
+        # Every item is asked for, so the layout always has the whole set to rebuild from.
+        trees = self.layout.to_items(abstract) if abstract is not None else dict.fromkeys(self.layout.items)
+        args = ocp.args.Composite(**{item: ocp.args.PyTreeRestore(tree) for item, tree in trees.items()})
+        return self.layout.from_items(dict(self._manager.restore(step, args=args)))
 
     def metadata(self, step: int | None = None) -> Config | None:
         """Bookkeeping filed with the checkpoint at ``step``, latest when None.
@@ -219,31 +266,6 @@ class OrbaxCheckpointer:
         if step is None:
             return None
         return self._manager.metadata(step).custom_metadata
-
-    def load(self, step: int | None = None, abstract: State | None = None) -> State:
-        """Read back a checkpoint.
-
-        Args:
-            step: Step to read, defaulting to the latest saved.
-            abstract: Pytrees of ``jax.ShapeDtypeStruct`` keyed by item, naming the shardings to
-                restore onto. Also selects which items are read, so pass one item to leave the
-                rest on disk. Without it orbax reads shardings from the checkpoint, which is
-                slower and assumes the topology that saved it.
-
-        Returns:
-            One pytree per item read, keyed by item.
-
-        Raises:
-            ValueError: If no ``step`` is given and the directory holds no checkpoints.
-        """
-        step = self.latest if step is None else step
-        if step is None:
-            raise ValueError(f"No checkpoint to load from {self.directory}")
-        if abstract is None:
-            args = ocp.args.Composite(**{item: ocp.args.PyTreeRestore() for item in self.items})
-        else:
-            args = ocp.args.Composite(**{item: ocp.args.PyTreeRestore(tree) for item, tree in abstract.items()})
-        return dict(self._manager.restore(step, args=args))
 
     @property
     def directory(self) -> epath.Path:
@@ -268,7 +290,7 @@ class OrbaxCheckpointer:
     def close(self) -> None:
         self._manager.close()
 
-    def __enter__(self) -> "OrbaxCheckpointer":
+    def __enter__(self) -> "OrbaxCheckpointer[S]":
         return self
 
     def __exit__(self, *_: object) -> None:

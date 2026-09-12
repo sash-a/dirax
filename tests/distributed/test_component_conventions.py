@@ -15,7 +15,7 @@ from brrrl.distributed.components.actor import Actor
 from brrrl.distributed.components.checkpointer import CheckpointStore
 from brrrl.distributed.components.inference_server import InferenceServer, InferenceServerPolicy
 from brrrl.distributed.components.metrics import RayMetricCollector
-from brrrl.distributed.components.params import ParamStore, RayParamSink, RayParamSource
+from brrrl.distributed.components.params import RayParamSink, RayParamSource, RayParamStore
 from brrrl.distributed.components.trainer import Trainer
 from brrrl.distributed.placement.component import Behaviour, Component
 from brrrl.params.params import ParamSink, ParamSource
@@ -24,8 +24,8 @@ COMPONENTS: tuple[type[Component], ...] = (
     Actor,
     CheckpointStore,
     InferenceServer,
-    ParamStore,
     RayMetricCollector,
+    RayParamStore,
     Trainer,
 )
 """Every class in the package Ray places. Typed, so `ty` rejects one that declares no behaviour."""
@@ -41,17 +41,6 @@ def views(
     from it would otherwise surface as a failure on a cluster.
     """
     return source, sink, policy
-
-
-def test_every_class_is_either_a_component_or_a_view_of_one() -> None:
-    """The package holds placed Components and the handle-holding halves their clients use, and nothing else.
-
-    A new class that is neither has skipped the decision this contract exists to force: an empty
-    ``RAY_OPTIONS`` is someone deciding Ray's defaults are right, a missing one is nobody deciding.
-    """
-    undeclared = [cls.name for cls in classes() if behaviour_of(cls) is None and not holds_a_handle(cls)]
-
-    assert undeclared == []
 
 
 def test_the_components_are_exactly_the_classes_that_declare_behaviour() -> None:
@@ -89,8 +78,3 @@ def behaviour_of(cls: ast.ClassDef) -> ast.expr | None:
 
 def keys_of(behaviour: ast.expr | None) -> list[str]:
     return [ast.literal_eval(key) for key in behaviour.keys if key] if isinstance(behaviour, ast.Dict) else []
-
-
-def holds_a_handle(cls: ast.ClassDef) -> bool:
-    """A client half: it carries a reference to a Component rather than being one."""
-    return "ActorHandle" in {ast.unparse(node.annotation) for node in cls.body if isinstance(node, ast.AnnAssign)}

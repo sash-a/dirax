@@ -17,13 +17,14 @@ dependencies = [
     "numpy>2.0.0",
     # Distributed libs
     "ray>=2.55.1",
-    "id-echo>=0.2.0",
+    "id-echo>=0.2.1",
     # RL libs
     "gymnasium>=1.2.0",
     "distrax>=0.1.5",
     # Other
     "etils[epath]>=1.14.0",
     "tqdm>=4.67",
+    "einops>=0.8.2",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ cuda = ["jax[cuda13]>=0.10.1"]
 
 [project.scripts]
 ppo = "brrrl.algorithms.ppo.ppo:main"
+ppo-dist = "brrrl.algorithms.ppo.distributed:main"
 
 # A group, not an extra: the toolchain is for working on brrrl, not for installing it, and groups
 # stay out of the built wheel's metadata.

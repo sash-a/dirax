@@ -55,9 +55,14 @@ class EnvStepper[Obs, Act](Protocol):
     @property
     def num_agents(self) -> int: ...
 
-    def reset(self) -> tuple[Obs, dict[str, Any]]: ...
+    def reset(self, *, seed: int | None = None) -> tuple[Obs, dict[str, Any]]: ...
 
     def step(self, action: Act) -> StepResult[Obs]: ...
+
+    def close(self) -> None:
+        """Release the environments. Part of the trait because a stepper is free to hold processes,
+        and nothing above it can know whether the one it was handed does."""
+        ...
 
 
 @final
@@ -89,8 +94,8 @@ class LoopedStepper[Obs, Act]:
     def num_envs(self) -> int:
         return self.env.num_envs
 
-    def reset(self) -> tuple[Obs, dict[str, Any]]:
-        return self.env.reset()
+    def reset(self, *, seed: int | None = None) -> tuple[Obs, dict[str, Any]]:
+        return self.env.reset(seed=seed)
 
     def step(self, action: Act) -> StepResult[Obs]:
         return self.env.step(action)
@@ -137,8 +142,8 @@ class AsyncStepper[Obs, Act]:
     def num_envs(self) -> int:
         return self.env.num_envs
 
-    def reset(self) -> tuple[Obs, dict[str, Any]]:
-        return self.env.reset()
+    def reset(self, *, seed: int | None = None) -> tuple[Obs, dict[str, Any]]:
+        return self.env.reset(seed=seed)
 
     def step(self, action: Act) -> StepResult[Obs]:
         return self.env.step(action)

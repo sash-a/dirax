@@ -1,12 +1,17 @@
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
+import distrax
 import gymnasium as gym
+import jax
 import numpy as np
 import optax
 import optree as tree
 from numpy.typing import NDArray
 
-from brrrl.types import TRANSITIONS, VERSION, Array, ArrayTree, Params, PRNGKey
+from brrrl.types import TRANSITIONS, Array, ArrayTree, Params, PRNGKey
+
+type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 
 
 class PPOPolicyOutput(NamedTuple):
@@ -27,7 +32,6 @@ class PPOTransition(NamedTuple):
 
 class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
-    version: NDArray[np.float32]
 
 
 class PPOBatch(NamedTuple):
@@ -79,6 +83,4 @@ def example(rollout_length: int, prefix: tuple[int, ...], obs_space: gym.Space, 
         log_prob=np.empty(width, dtype=np.float32),
     )
 
-    param_generation = np.empty((), dtype=np.float32)
-
-    return {TRANSITIONS: trajectory, VERSION: param_generation}
+    return {TRANSITIONS: trajectory}

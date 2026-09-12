@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple, Protocol
 
 import jax
@@ -8,17 +8,16 @@ from numpy.typing import ArrayLike, NDArray
 
 type Params = VariableDict
 type PRNGKey = jax.Array
-type Version = int
 type Metrics = Mapping[str, ArrayLike]
 type NestedMetrics = Mapping[str, Any]
 type ArrayTree = NDArray | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
 type StepResult[Obs] = tuple[Obs, NDArray[np.floating], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]
 type Array = NDArray | jax.Array
+type UpdateFn[S: UpdateState, T: Trajectory] = Callable[[S, T], tuple[S, Metrics]]
 
 
 TRANSITIONS = "transitions"
-VERSION = "version"
-"""A Trajectory's timescale names. They are its field names too, so the accumulator rebuilds it."""
+"""A Trajectory's timescale name. It is its field name too, so the accumulator rebuilds it."""
 
 
 class Transition(Protocol):
@@ -36,18 +35,30 @@ class Transition(Protocol):
     def action(self) -> Array: ...
 
 
+# TODO: do we need a Trajectory anymore? Might be useful if we create things at different timescales
 class Trajectory(Protocol):
     @property
     def transitions(self) -> Transition: ...
-    @property
-    def version(self) -> NDArray[np.float32]:
-        """The Version this Trajectory's acts ran under."""
-        ...
+
+
+class Rollout[T: Trajectory](NamedTuple):
+    """One actor's submission. The Roller stamps the version, so no user type carries it."""
+
+    trajectory: T
+    version: NDArray[np.float32]
+
+
+class TrainerBatch[T: Trajectory](NamedTuple):
+    """The Rollouts one update consumes: payload sharded across devices, provenance on the host."""
+
+    trajectory: T
+    version: NDArray[np.float32]
+    metrics: Metrics
 
 
 class VersionedParams(NamedTuple):
     value: Params
-    version: Version
+    version: int
 
 
 class UpdateState(Protocol):
@@ -56,5 +67,6 @@ class UpdateState(Protocol):
 
 
 class UpdateRule[S: UpdateState, T: Trajectory](Protocol):
-    def update(self, state: S, batch: T) -> tuple[S, Metrics]: ...
+    def update(self, state: S, trajectory: T) -> tuple[S, Metrics]: ...
     def isvalid(self) -> bool: ...
+    def init(self, key: PRNGKey) -> S: ...

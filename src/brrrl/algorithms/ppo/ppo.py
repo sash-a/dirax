@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from echo import TrajectoryAccumulator
+from einops import rearrange
 from gymnasium.wrappers.vector import NormalizeReward
 from jax import tree
 
@@ -19,16 +20,24 @@ from brrrl.acting.env_stepper import AsyncStepper, prefix
 from brrrl.acting.policy import LocalPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.estimators import generalised_advantages
-from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
-from brrrl.metrics import default_local_logger
+from brrrl.algorithms.ppo.types import (
+    PPOApply,
+    PPOBatch,
+    PPOPolicyOutput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
+from brrrl.metrics import default_logger
+from brrrl.metrics.logger import MultiLogger
 from brrrl.metrics.stdout import StdoutLogger
-from brrrl.metrics.wandb import WandbLogger
 from brrrl.networks.distribution import normalised_entropy
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
-from brrrl.params.params import InMemoryParamStore
-from brrrl.types import Array, ArrayTree, Metrics, Params, PRNGKey, VersionedParams
-from brrrl.utils.jax import tree_swapaxes
+from brrrl.params.params import ParamStore
+from brrrl.types import Array, Metrics, Params, PRNGKey, VersionedParams
+from brrrl.utils.duration import EveryTicks
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
 
@@ -36,13 +45,17 @@ EPS = 1e-8
 MAX_GRAD_NORM = 0.5
 ADAM_EPS = 1e-5
 
-type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
 type EpochCarry = tuple[PPOUpdateState, PPOBatch]
 type LossInfo = dict[str, jax.Array]
 
 
 def normalise(advantages: Array, mask: Array) -> jax.Array:
     return (advantages - jnp.mean(advantages, where=mask)) / (jnp.sqrt(jnp.var(advantages, where=mask)) + EPS)
+
+
+def batch_major(trajectory: PPOTrajectory) -> PPOTrajectory:
+    """A batch of rollouts as ``(batch, time, ...)``, from the ``(rollouts, time, envs, ...)`` it arrives as."""
+    return tree.map(lambda leaf: rearrange(leaf, "R T E ... -> (R E) T ..."), trajectory)
 
 
 def explained_variance(targets: Array, predictions: Array, mask: Array) -> jax.Array:
@@ -55,6 +68,7 @@ def explained_variance(targets: Array, predictions: Array, mask: Array) -> jax.A
 @dataclass(frozen=True)
 class PPOUpdateRule:
     apply_fn: PPOApply
+    init_params: Callable[[PRNGKey], Params]
     optimizer: optax.GradientTransformation
     batch_size: int
     rollout_length: int
@@ -66,6 +80,11 @@ class PPOUpdateRule:
     vf_coef: float = 0.5
     gamma: float = 0.99
     gae_lambda: float = 0.95
+
+    def init(self, key: PRNGKey) -> PPOUpdateState:
+        param_key, state_key = jax.random.split(key)
+        params = self.init_params(param_key)
+        return PPOUpdateState(params, self.optimizer.init(params), state_key)
 
     def isvalid(self) -> bool:
         return (
@@ -82,8 +101,8 @@ class PPOUpdateRule:
             and 0 <= self.gae_lambda <= 1
         )
 
-    @jax.jit(static_argnames=("self",))
     def update(self, state: PPOUpdateState, trajectory: PPOTrajectory) -> tuple[PPOUpdateState, Metrics]:
+        trajectory = batch_major(trajectory)
         chex.assert_tree_shape_prefix(trajectory.transitions, (self.batch_size, self.rollout_length + 1))
         advantages = generalised_advantages(
             trajectory.transitions.reward,
@@ -185,15 +204,6 @@ class PPOUpdateRule:
 
 
 class PPONetwork(nn.Module):
-    """Torso and Heads applied straight to whatever shape the observation arrives in.
-
-    It says nothing about agents, and that is the point. Every layer here is polymorphic over its
-    leading axes — the property that already lets acting at ``(E, ...)`` and learning at
-    ``(T, E, ...)`` call one network — so an env whose agents each observe for themselves hands this
-    an agent axis and gets one back on the action, the log-probability and the value, while an env
-    with a single agent hands it none and gets none back (ADR-0012).
-    """
-
     policy: nn.Module
 
     def setup(self):
@@ -237,10 +247,11 @@ def main() -> None:
     num_minibatches = 4
     gamma = 0.99
     learning_rate = 3e-4
+    seed = 1
     env_name = "Acrobot-v1"
 
-    key = jax.random.key(1)
-    weights_key, policy_key, update_key = jax.random.split(key, 3)
+    key = jax.random.key(seed)
+    init_key, policy_key = jax.random.split(key)
 
     # if the env has an action mask then wrap in brrrl.wrappers.action_mask.ActionMask
     make_env = lambda: rescaled(gym.make(env_name))
@@ -253,12 +264,11 @@ def main() -> None:
 
     network = make_network(env.observation_space, act_space)
     apply_fn = cast(PPOApply, network.apply)
-    params = network.init(weights_key, env.observation_space.sample())
-    param_source = InMemoryParamStore(VersionedParams(params, 0))
+    obs_example = env.observation_space.sample()
+    init_params = lambda weights_key: network.init(weights_key, obs_example)
     # Annealed to zero across the run
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
-    opt_state = opt.init(params)
 
     def actor_forward(params, observations, key):
         distr, value = apply_fn(params, observations)
@@ -271,27 +281,31 @@ def main() -> None:
             obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob
         )
 
-    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
-    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len)
-    updater = PPOUpdateRule(apply_fn, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    updater = PPOUpdateRule(apply_fn, init_params, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
-    update_state = PPOUpdateState(params, opt_state, update_key)
+    update_state = updater.init(init_key)
+    update_fn = jax.jit(updater.update)
 
-    actor_recorder, learner_recorder = default_local_logger(
-        StdoutLogger(),
-        WandbLogger("brrrl", tags=["PPO", env_name]),
-        log_every=roller.num_transitions * 20,
+    param_source = ParamStore(VersionedParams(update_state.params, 0))
+    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
+    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
+
+    actor_recorder, learner_recorder = default_logger(
+        MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),
+        every=EveryTicks(20),
     )
 
     for i in range(num_updates):
-        trajectory, act_metrics = roller.rollout()
+        rollout, act_metrics = roller.rollout()
         actor_recorder.record(act_metrics, num_transitions=roller.num_transitions)
-        # A Roller rolls out time-major; ``batch_size`` is this worker's envs, so they lead.
-        trajectory = trajectory._replace(transitions=tree_swapaxes(trajectory.transitions, 0, 1))
-        update_state, learn_metrics = updater.update(update_state, trajectory)
+        # One Roller, so the rollout axis a stacked batch of them would bring is width one here.
+        stacked = tree.map(lambda leaf: leaf[None], rollout.trajectory)
+        update_state, learn_metrics = update_fn(update_state, stacked)
         param_source.publish(update_state.params)
         learner_recorder.record(learn_metrics)
+
+    roller.close()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from brrrl.acting.policy import LocalPolicy
-from brrrl.params.params import InMemoryParamStore
+from brrrl.params.params import ParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
 OBSERVATION = jnp.float32(3.0)
@@ -48,8 +48,8 @@ def keyed(params: Params, observation: jax.Array, key: PRNGKey) -> Output:
     return Output(action=jax.random.bits(key))
 
 
-def seeded(scale: float = 2.0, version: int = 0) -> InMemoryParamStore:
-    return InMemoryParamStore(VersionedParams({"params": {"scale": jnp.float32(scale)}}, version))
+def seeded(scale: float = 2.0, version: int = 0) -> ParamStore:
+    return ParamStore(VersionedParams({"params": {"scale": jnp.float32(scale)}}, version))
 
 
 def acted(policy: LocalPolicy[jax.Array, Output]) -> float:

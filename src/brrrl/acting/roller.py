@@ -6,7 +6,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
-from brrrl.types import TRANSITIONS, VERSION, Metrics, Trajectory, Transition
+from brrrl.types import TRANSITIONS, Metrics, Rollout, Trajectory, Transition
 from brrrl.wrappers.statistics import env_stats, episode_stats
 
 type RecordFn[Obs, O: PolicyOutput] = Callable[
@@ -37,6 +37,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         record: RecordFn[Obs, O],
         trajectory: type[T],
         num_steps: int,
+        seed: int,
     ) -> None:
         """The shape every field leads with comes off the stepper, which is what knows it: ``(E, A)``
         for a team and ``(E,)`` for a single agent, which has no agent axis at all. This is the only
@@ -48,7 +49,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         self.trajectory = trajectory
         self.num_steps = num_steps
         self.width = (stepper.num_envs, stepper.num_agents) if stepper.num_agents > 1 else (stepper.num_envs,)
-        self.prev_obs, _ = stepper.reset()
+        self.prev_obs, _ = stepper.reset(seed=seed)
         self.prev_term = np.zeros(self.width, np.bool_)
         self.prev_trunc = np.zeros(self.width, np.bool_)
 
@@ -59,7 +60,12 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         stepped, so it is not one of them."""
         return self.num_steps * self.stepper.num_envs
 
-    def rollout(self) -> tuple[T, Metrics]:
+    def close(self) -> None:
+        """Releases the environments. The Roller built none of them, but it is the only thing that
+        holds the stepper, so it is the only place a caller can reach them from."""
+        self.stepper.close()
+
+    def rollout(self) -> tuple[Rollout[T], Metrics]:
         infos, versions = [], []
         for _ in range(self.num_steps):
             output, version = self.policy.act(self.prev_obs)
@@ -76,5 +82,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         self.accumulator.add(TRANSITIONS, transition)
         versions.append(version)
 
-        self.accumulator.add(VERSION, np.array([np.mean(versions)], np.float32))
-        return self.trajectory(**self.accumulator.build()), {**episode_stats(infos), **env_stats(infos)}
+        version = np.array([np.mean(versions)], np.float32)
+        batch = Rollout(self.trajectory(**self.accumulator.build()), version)
+        metrics = {**episode_stats(infos), **env_stats(infos)}
+        return batch, metrics

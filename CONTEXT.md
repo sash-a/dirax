@@ -9,8 +9,7 @@ single-process; distribution is added by wrapping it, never by changing it.
 
 **Store**:
 The thing that owns a piece of run state that is written and later read back — the
-live params. Exactly one exists per run, as an in-process type that a Ray-placed
-wrapper holds rather than reimplements.
+live params. Exactly one exists per run.
 _Avoid_: Server, cache, manager, registry
 
 **Sink**:
