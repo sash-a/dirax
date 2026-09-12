@@ -233,6 +233,9 @@ dependencies = [
 cuda = [
     { name = "jax", extra = ["cuda13"] },
 ]
+metrana = [
+    { name = "metrana" },
+]
 mlflow = [
     { name = "mlflow" },
 ]
@@ -242,7 +245,7 @@ wandb = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "brrrl", extra = ["mlflow", "wandb"] },
+    { name = "brrrl", extra = ["metrana", "mlflow", "wandb"] },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -261,6 +264,7 @@ requires-dist = [
     { name = "id-echo", specifier = ">=0.2.1" },
     { name = "jax", specifier = ">=0.10.1" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'cuda'", specifier = ">=0.10.1" },
+    { name = "metrana", marker = "extra == 'metrana'", specifier = ">=1.4" },
     { name = "mlflow", marker = "extra == 'mlflow'", specifier = ">=3.0" },
     { name = "numpy", specifier = ">2.0.0" },
     { name = "optax", specifier = ">=0.2.4" },
@@ -269,11 +273,11 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.67" },
     { name = "wandb", marker = "extra == 'wandb'", specifier = ">=0.19" },
 ]
-provides-extras = ["mlflow", "wandb", "cuda"]
+provides-extras = ["metrana", "mlflow", "wandb", "cuda"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "brrrl", extras = ["mlflow", "wandb"] },
+    { name = "brrrl", extras = ["metrana", "mlflow", "wandb"] },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-xdist", specifier = ">=3.6" },
@@ -1481,6 +1485,19 @@ wheels = [
 ]
 
 [[package]]
+name = "loguru"
+version = "0.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559, upload-time = "2024-12-06T11:20:56.608Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/29/0348de65b8cc732daa3e33e67806420b2ae89bdce2b04af740289c5c6c8c/loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c", size = 61595, upload-time = "2024-12-06T11:20:54.538Z" },
+]
+
+[[package]]
 name = "mako"
 version = "1.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1628,6 +1645,35 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "metrana"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "loguru" },
+    { name = "metrana-logging-engine" },
+    { name = "numpy" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/71/4f/4fc6ebcc73394e70fa34c4603c9420636b62080bdf8fcb3e6cb214f90361/metrana-1.4.0.tar.gz", hash = "sha256:5c7f07b48af889ccf488e335036a53107c0f9bfd90fb5e0ff0f9945735667fbc", size = 283774, upload-time = "2026-09-10T13:39:41Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/f6/eedb11fd8c51fc1ecf44115cf4e978033428593e0879d536fd48b061ad6e/metrana-1.4.0-py3-none-any.whl", hash = "sha256:90fa06daeba030065f610b538457c8968324e7452924024c6e5b218591658f9c", size = 247987, upload-time = "2026-09-10T13:39:39.524Z" },
+]
+
+[[package]]
+name = "metrana-logging-engine"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/0b/01e95d2280b15fcc08e17d66da34d944130ecdf3e014686a8de9aa7524ee/metrana_logging_engine-0.8.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:924577f9e8d9e21cc8d4cfe1bc04b6f675588eade8ab17b24384a75d08b9c37a", size = 5437144, upload-time = "2026-09-10T13:38:50.395Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/dd/5088547ba9548a81b3000b6fbd89b12d73645d5a6e53cc3b44f8cdad74f9/metrana_logging_engine-0.8.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:e5e1915494207dcfde5aba8aa9c4b4d90d5b6b493bcc36bb1aa9a97e95ed5c8b", size = 5174817, upload-time = "2026-09-10T13:38:52.444Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/46/b8fde0046f8b47dafb1aa735d7a151d0fe5eb48e5a72a1cc68d10cee6ef0/metrana_logging_engine-0.8.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:d677e889739ac4cac0ffbdd10a02ac32f22bcadd3562c7a29dbd0e839dcfc5a9", size = 5848357, upload-time = "2026-09-10T13:38:54.713Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/e0/3a21d65f71021efbc3c3a4c31e64e5be6296f9cf9fa5d97d550f423a9a48/metrana_logging_engine-0.8.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:fe1af3792f89dd068cfa0ef88ed19abb670aa9b33e380889b0d7c5d32c273e70", size = 5947220, upload-time = "2026-09-10T13:38:56.778Z" },
+    { url = "https://files.pythonhosted.org/packages/34/8a/78e8d3b9d8d633c3378980fd8b45fc9c4857c9f453f28915567d3013c6f7/metrana_logging_engine-0.8.0-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:f7a5a1192ef9e668e431ea4d59894fb1fc5f780d7df4132d21c686cbf8d60127", size = 6061664, upload-time = "2026-09-10T13:38:58.808Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/01/c80da2fdc0bea5e672313c6c622c2310fb88fd28e938e474f63b3b2b73a2/metrana_logging_engine-0.8.0-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ea28729943895d6065d46d75672047b97f8a207f6719f5355997a4cb4d649d1a", size = 6268891, upload-time = "2026-09-10T13:39:00.924Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/9a/c631e8ac32210fe6fa1a4bf333de1112d248bf9b7f9413022105d36e3c79/metrana_logging_engine-0.8.0-cp310-abi3-win_amd64.whl", hash = "sha256:d87038dca174697c622463e329e83000cc4a17d61cb7efaf577d400fbfd536f6", size = 4521300, upload-time = "2026-09-10T13:39:03.26Z" },
 ]
 
 [[package]]
@@ -3671,6 +3717,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/dd/b2/381be8cfdee792dd117872481b6e378f85c957dd7c5bca38897b08f765fd/werkzeug-3.1.8.tar.gz", hash = "sha256:9bad61a4268dac112f1c5cd4630a56ede601b6ed420300677a869083d70a4c44", size = 875852, upload-time = "2026-04-02T18:49:14.268Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/93/8c/2e650f2afeb7ee576912636c23ddb621c91ac6a98e66dc8d29c3c69446e1/werkzeug-3.1.8-py3-none-any.whl", hash = "sha256:63a77fb8892bf28ebc3178683445222aa500e48ebad5ec77b0ad80f8726b1f50", size = 226459, upload-time = "2026-04-02T18:49:12.72Z" },
+]
+
+[[package]]
+name = "win32-setctime"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867, upload-time = "2024-12-07T15:28:28.314Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083, upload-time = "2024-12-07T15:28:26.465Z" },
 ]
 
 [[package]]

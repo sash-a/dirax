@@ -28,6 +28,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+metrana = ["metrana>=1.4"]
 mlflow = ["mlflow>=3.0"]
 wandb = ["wandb>=0.19"]
 cuda = ["jax[cuda13]>=0.10.1"]
@@ -40,7 +41,7 @@ ppo-dist = "brrrl.algorithms.ppo.distributed:main"
 # stay out of the built wheel's metadata.
 [dependency-groups]
 dev = [
-    "brrrl[mlflow,wandb]",
+    "brrrl[metrana,mlflow,wandb]",
     "pre-commit>=4.0",
     "pytest>=7.0",
     "pytest-xdist>=3.6",

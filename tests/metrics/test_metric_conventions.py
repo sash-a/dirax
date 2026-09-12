@@ -2,7 +2,7 @@
 
 Each is an architectural commitment an ADR rests on, so a change that breaks one should fail here
 rather than surface as a series logged against the wrong clock, or as an import error on a cluster
-that installed neither tracking backend.
+that installed none of the tracking backends.
 """
 
 import ast
@@ -19,7 +19,7 @@ from brrrl.metrics.logger import Logger, MultiLogger, NamespacedProcessor
 from brrrl.metrics.stdout import StdoutLogger
 
 FORBIDDEN_IMPORTS = ("ray", "brrrl.distributed", "brrrl.algorithms")
-OPTIONAL_BACKENDS = {"mlflow": "mlflow.py", "wandb": "wandb.py"}
+OPTIONAL_BACKENDS = {"metrana": "metrana.py", "mlflow": "mlflow.py", "wandb": "wandb.py"}
 THE_TRAIT = ("log", "log_artifact", "close")
 THE_STEP = "step"
 
@@ -27,7 +27,7 @@ THE_STEP = "step"
 def implementations() -> list[type]:
     """Every Logger in the package, with the optional backends included where they are installed."""
     found: list[type] = [StdoutLogger, NamespacedProcessor, MultiLogger]
-    for package, backend in (("mlflow", "MLflowLogger"), ("wandb", "WandbLogger")):
+    for package, backend in (("metrana", "MetranaLogger"), ("mlflow", "MLflowLogger"), ("wandb", "WandbLogger")):
         with suppress(ImportError):
             found.append(getattr(importlib.import_module(f"brrrl.metrics.{package}"), backend))
     return found
@@ -40,8 +40,8 @@ def test_the_module_reaches_no_ray_and_nothing_from_the_layers_above_it() -> Non
 
 
 def test_each_optional_backend_is_reached_from_its_own_module_and_nowhere_else() -> None:
-    """mlflow and wandb are extras, so a run that installed neither still needs the accumulator, the
-    processors and the collector. One stray import at the top of a shared module breaks every run."""
+    """The tracking backends are extras, so a run that installed none still needs the accumulator,
+    the processors and the collector. One stray import at the top of a shared module breaks every run."""
     for package, module in OPTIONAL_BACKENDS.items():
         elsewhere = [source.name for source in sources() if source.name != module and reaches(source, package)]
 
