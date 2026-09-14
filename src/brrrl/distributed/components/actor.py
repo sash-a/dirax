@@ -7,9 +7,9 @@ from echo import TcpClient
 from brrrl.acting.roller import Roller
 from brrrl.distributed.placement.component import Behaviour
 from brrrl.metrics.collector import MetricRecorder
+from brrrl.metrics.timer import AggregatedElapsed, Timer
 
 
-# TODO: better, non-conflicting name
 class Actor:
     """One thread per roller. Rollers are built here, not shipped here."""
 
@@ -26,6 +26,7 @@ class Actor:
         self.replay_client = make_replay_client()
         self.metric_recorder = metric_recorder
 
+        self.timer = Timer(AggregatedElapsed)
         self.stop = False
 
     # TODO: how to support inference servers with actors running in the background
@@ -33,8 +34,12 @@ class Actor:
     def run(self) -> None:
         try:
             while not self.stop:
-                trajectory, metrics = self.roller.rollout()
-                self.replay_client.send(trajectory)  # ty: ignore[invalid-argument-type]
+                with self.timer("rollout_time"):
+                    trajectory, metrics = self.roller.rollout()
+                with self.timer("replay_send_time"):
+                    self.replay_client.send(trajectory)  # ty: ignore[invalid-argument-type]
+
+                metrics = {**metrics, **self.timer.dump()}
                 self.metric_recorder.record(metrics, self.roller.num_transitions)
         finally:
             self.roller.close()

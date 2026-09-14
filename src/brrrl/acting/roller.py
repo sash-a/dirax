@@ -1,3 +1,4 @@
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -6,6 +7,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
+from brrrl.metrics.timer import AggregatedElapsed, Timer
 from brrrl.types import TRANSITIONS, Metrics, Rollout, Trajectory, Transition
 from brrrl.wrappers.statistics import env_stats, episode_stats
 
@@ -52,6 +54,7 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
         self.prev_obs, _ = stepper.reset(seed=seed)
         self.prev_term = np.zeros(self.width, np.bool_)
         self.prev_trunc = np.zeros(self.width, np.bool_)
+        self.timer = Timer(AggregatedElapsed)
 
     @property
     def num_transitions(self) -> int:
@@ -67,22 +70,30 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
 
     def rollout(self) -> tuple[Rollout[T], Metrics]:
         infos, versions = [], []
+        start_time = time.monotonic()
         for _ in range(self.num_steps):
-            output, version = self.policy.act(self.prev_obs)
-            observation, reward, terminated, truncated, info = self.stepper.step(output.action)
-            transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, reward, output)
+            with self.timer("policy_act_time"):
+                output, version = self.policy.act(self.prev_obs)
+            with self.timer("env_step_time"):
+                observation, reward, terminated, truncated, info = self.stepper.step(output.action)
+            with self.timer("env_step_bookkeeping_time"):
+                transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, reward, output)
+                self.accumulator.add(TRANSITIONS, transition)
+                self.prev_obs, self.prev_term, self.prev_trunc = observation, terminated, truncated
+                infos.append(info)
+                versions.append(version)
+
+        with self.timer("policy_act_time"):
+            trailing, version = self.policy.act(self.prev_obs)
+
+        with self.timer("episode_bookkeeping_time"):
+            no_reward = np.zeros(self.width)
+            transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, no_reward, trailing)
             self.accumulator.add(TRANSITIONS, transition)
-            self.prev_obs, self.prev_term, self.prev_trunc = observation, terminated, truncated
-            infos.append(info)
             versions.append(version)
+            version = np.array([np.mean(versions)], np.float32)
+            batch = Rollout(self.trajectory(**self.accumulator.build()), version)
 
-        trailing, version = self.policy.act(self.prev_obs)
-        no_reward = np.zeros(self.width)
-        transition = self.record(self.prev_obs, self.prev_term, self.prev_trunc, no_reward, trailing)
-        self.accumulator.add(TRANSITIONS, transition)
-        versions.append(version)
-
-        version = np.array([np.mean(versions)], np.float32)
-        batch = Rollout(self.trajectory(**self.accumulator.build()), version)
-        metrics = {**episode_stats(infos), **env_stats(infos)}
+        sps = self.num_steps / (time.monotonic() - start_time)
+        metrics = {**episode_stats(infos), **env_stats(infos), **self.timer.dump(), "steps_per_second": sps}
         return batch, metrics
