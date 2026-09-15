@@ -95,5 +95,5 @@ class Roller[Obs, O: PolicyOutput, T: Trajectory]:
             batch = Rollout(self.trajectory(**self.accumulator.build()), version)
 
         sps = self.num_steps / (time.monotonic() - start_time)
-        metrics = {**episode_stats(infos), **env_stats(infos), **self.timer.dump(), "steps_per_second": sps}
+        metrics = {**episode_stats(infos), **env_stats(infos), **self.timer.dump(), "acted_steps_per_second": sps}
         return batch, metrics

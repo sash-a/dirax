@@ -1,3 +1,4 @@
+import time
 from typing import ClassVar
 
 import numpy as np
@@ -49,6 +50,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
     @ray.method
     def run(self) -> None:
         for i in range(self.num_updates):
+            start_time = time.monotonic()
             with self.timer("traj_wait_time"):
                 trajectory, roller_version, replay_metrics = next(self.dataset)
 
@@ -66,8 +68,11 @@ class Trainer[S: UpdateState, T: Trajectory]:
             with self.timer("checkpointing_time"):
                 self.checkpointer.save(i, self.state, None, metadata={"timestep": timestep, "update": i + 1})
 
+            sps = self.timesteps_per_update / (time.monotonic() - start_time)
             versions = {"staleness": np.mean(trainer_version - roller_version)}
-            self.metric_recorder.record({**replay_metrics, **learn_metrics, **versions, **self.timer.dump()})
+            self.metric_recorder.record(
+                {**replay_metrics, **learn_metrics, **versions, **self.timer.dump(), "learned_steps_per_second": sps}
+            )
 
         final_timestep = self.num_updates * self.timesteps_per_update
         self.checkpointer.save(
