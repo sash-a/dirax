@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, Self
 
 import jax
 import numpy as np
@@ -20,22 +20,34 @@ TRANSITIONS = "transitions"
 """A Trajectory's timescale name. It is its field name too, so the accumulator rebuilds it."""
 
 
-class Transition(Protocol):
-    """One slot. The flags describe the observation beside them; the rest describe the step out of it."""
-
-    @property
-    def observation(self) -> ArrayTree: ...
-    @property
-    def terminated(self) -> NDArray[np.bool_]: ...
-    @property
-    def truncated(self) -> NDArray[np.bool_]: ...
-    @property
-    def reward(self) -> NDArray[np.floating]: ...
+class PolicyOutput(Protocol):
     @property
     def action(self) -> Array: ...
 
 
-# TODO: do we need a Trajectory anymore? Might be useful if we create things at different timescales
+class Transition[Obs, O: PolicyOutput](Protocol):
+    """One slot. The flags describe the observation beside them; the rest describe the step out of it.
+
+    Every leaf is an `Array` rather than the numpy type a stepper reported, because one Transition
+    type is read on both sides of echo: numpy where a Roller builds it, jax inside the jitted update.
+    """
+
+    @property
+    def observation(self) -> Obs: ...
+    @property
+    def terminated(self) -> Array: ...
+    @property
+    def truncated(self) -> Array: ...
+    @property
+    def reward(self) -> Array: ...
+    @property
+    def action(self) -> Array: ...
+    @classmethod
+    def record(cls, obs: Obs, term: Array, trunc: Array, reward: Array, policy_output: O) -> Self:
+        """One slot from one step, built from what a stepper reported and what a Policy returned."""
+        ...
+
+
 class Trajectory(Protocol):
     @property
     def transitions(self) -> Transition: ...

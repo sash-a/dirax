@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 import distrax
 import gymnasium as gym
@@ -7,7 +7,6 @@ import jax
 import numpy as np
 import optax
 import optree as tree
-from numpy.typing import NDArray
 
 from brrrl.types import TRANSITIONS, Array, ArrayTree, Params, PRNGKey
 
@@ -22,12 +21,16 @@ class PPOPolicyOutput(NamedTuple):
 
 class PPOTransition(NamedTuple):
     observation: ArrayTree
-    terminated: NDArray[np.bool_]
-    truncated: NDArray[np.bool_]
-    reward: NDArray[np.floating]
+    terminated: Array
+    truncated: Array
+    reward: Array
     action: Array
     value: Array
     log_prob: Array
+
+    @classmethod
+    def record(cls, obs: ArrayTree, term: Array, trunc: Array, reward: Array, policy_output: PPOPolicyOutput) -> Self:
+        return cls(obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob)
 
 
 class PPOTrajectory(NamedTuple):

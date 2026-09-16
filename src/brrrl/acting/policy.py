@@ -4,30 +4,23 @@ from typing import Protocol
 import jax
 
 from brrrl.params.params import ParamSource
-from brrrl.types import Array, Params, PRNGKey
-
-
-class PolicyOutput(Protocol):
-    @property
-    def action(self) -> Array: ...
-
+from brrrl.types import Array, ArrayTree, Params, PolicyOutput, PRNGKey
 
 type ActFn[Obs, O: PolicyOutput] = Callable[[Params, Obs, PRNGKey], O]
-"""The jittable half, where params and a key stay explicit because a Policy is what supplies them."""
+
+# Input: params, obs, key, hstate, done
+# Output: policy output, hstate
+type RecActFn[Obs, O: PolicyOutput] = Callable[[Params, Obs, PRNGKey, ArrayTree, Array], tuple[O, ArrayTree]]
 
 
 class Policy[Obs, O: PolicyOutput](Protocol):
-    def act(self, observation: Obs) -> tuple[O, int]:
-        """Act on host arrays and return them, beside the Version the params behind them carry.
-
-        When to align with new params is the Policy's own business, so nothing here forces a Sync
-        point — and a remote Policy reports its Version on a call it was making anyway.
-        """
+    def act(self, observation: Obs, done: Array) -> tuple[O, int]:
+        """Act on observations and return actions, beside the Version of the params."""
         ...
 
 
-class LocalPolicy[Obs, O: PolicyOutput]:
-    """Owns its params and its key, so a Roller holds no jax state and no param concept.
+class FFPolicy[Obs, O: PolicyOutput]:
+    """A feed-forward policy. It pulls new params every step if available.
 
     Its first params are pulled on construction rather than at the first Sync point, so the wait
     for a Learner that has not published yet is paid once, here, and a Sync point never blocks.
@@ -40,14 +33,38 @@ class LocalPolicy[Obs, O: PolicyOutput]:
         self.params = source.get(block=True)
 
     def sync(self) -> int:
-        """Never blocks: staleness has no reason to become a stall."""
+        """Never blocks, allows for speed at the cost of staleness."""
         if (latest := self.source.get(block=False)) is not None:
             self.params = latest
         return self.params.version
 
-    def act(self, observation: Obs) -> tuple[O, int]:
-        """Syncs first, so a publish reaches a rollout the step after it lands rather than the next
-        Trajectory. One device-to-host transfer for the whole tree, not one per leaf per step."""
+    def act(self, observation: Obs, done: Array) -> tuple[O, int]:
+        """Syncs first, so a publish reaches a rollout the step after it lands rather than the next Trajectory."""
         version = self.sync()
         self.key, key = jax.random.split(self.key)
         return jax.device_get(self.act_fn(self.params.value, observation, key)), version
+
+
+class RecPolicy[Obs, O: PolicyOutput]:
+    """A recurrent-forward policy with a hidden-state. It pulls new params every step if available."""
+
+    def __init__(self, act_fn: RecActFn[Obs, O], init_hstate: ArrayTree, source: ParamSource, key: PRNGKey) -> None:
+        self.act_fn = act_fn
+        self.hstate = init_hstate
+        self.source = source
+        self.key = key
+        self.params = source.get(block=True)
+
+    def sync(self) -> int:
+        if (latest := self.source.get(block=False)) is not None:
+            self.params = latest
+        return self.params.version
+
+    def act(self, observation: Obs, done: Array) -> tuple[O, int]:
+        version = self.sync()
+        self.key, key = jax.random.split(self.key)
+        policy_output, self.hstate = self.act_fn(self.params.value, observation, key, self.hstate, done)
+        # TODO: we might want to avoid the overhead of D2H/network transfer for hstates
+        #  some algorithms work with using the initial hstates or first from the rollout.
+        #  It's quite hard to do this and keep things clean/understandable
+        return jax.device_get(policy_output), version

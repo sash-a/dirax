@@ -17,7 +17,7 @@ from gymnasium.wrappers.vector import NormalizeReward
 from jax import tree
 
 from brrrl.acting.env_stepper import AsyncStepper, prefix
-from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.policy import FFPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.types import (
@@ -276,11 +276,6 @@ def main() -> None:
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action, logp, value)
 
-    def record(obs, term, trunc, reward, policy_output: PPOPolicyOutput):
-        return PPOTransition(
-            obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob
-        )
-
     updater = PPOUpdateRule(apply_fn, init_params, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
@@ -288,8 +283,8 @@ def main() -> None:
     update_fn = jax.jit(updater.update)
 
     param_source = ParamStore(VersionedParams(update_state.params, 0))
-    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
-    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
+    policy = FFPolicy(jax.jit(actor_forward), param_source, policy_key)
+    roller = Roller(stepper, policy, traj_accumulator, PPOTransition, PPOTrajectory, rollout_len, seed)
 
     actor_recorder, learner_recorder = default_logger(
         MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),
