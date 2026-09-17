@@ -28,7 +28,6 @@ import optax
 import pytest
 
 from brrrl.acting.env_stepper import prefix
-from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.ppo import (
     PPOApply,
     PPONetwork,
@@ -45,6 +44,7 @@ from brrrl.algorithms.ppo.types import (
     PPOUpdateState,
     example,
 )
+from brrrl.learning.estimators import generalised_advantages
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.types import TRANSITIONS, Array, Params, PRNGKey
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION

@@ -1,16 +1,11 @@
-"""What recurrence adds to PPO: a carry that survives a step and dies at an episode boundary.
+"""Recurrent PPO's assembly, and the property that makes its Trajectories mean anything.
 
-Three things have to agree for a recurrent run to be training on anything real — the assembly, the
-input type that feeds it, and a minibatch that is still a set of sequences — so `recurrent_wiring`
-builds all three together and these tests hold the agreement rather than any one piece of it.
+Acting applies `RecPPONetwork` over a length-one time axis and the loss applies the same network
+over a whole sequence. If those two disagree then every log probability a rollout stored belongs to
+a different network than the one the ratio compares it against, and nothing else here would notice.
 
-The sharpest property is that acting and learning are the same network at different time widths: a
-rollout records values from one step at a time, the loss recomputes them over a whole sequence, and
-if those disagree then every stored log probability the ratio is built from is comparing two
-different networks.
+The assembly is the driver's own rather than a double, so what these hold for is what `main` runs.
 """
-
-from dataclasses import replace
 
 import gymnasium as gym
 import jax
@@ -18,15 +13,14 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
+from jax import tree
 
-from brrrl.algorithms.ppo.ppo import (
-    PPOUpdateRule,
-    Sequences,
-    Steps,
-    feedforward_wiring,
-    recurrent_wiring,
-)
-from brrrl.algorithms.ppo.types import PPOBatch, PPOPolicyInput, PPOTrajectory, PPOTransition, RecPPOPolicyInput
+from brrrl.algorithms.ppo.ppo import PPOUpdateRule
+from brrrl.algorithms.ppo.recurrent import RecPPONetwork, make_network
+from brrrl.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput
+from brrrl.learning.minibatcher import Sequences
+from brrrl.networks.head import DiscreteHead, MaskedDiscreteHead
+from brrrl.types import Params
 
 MOMENTS, ENVS, OBS, ACTIONS, HIDDEN = 6, 4, 5, 3, 16
 SLOTS = MOMENTS + 1
@@ -36,10 +30,8 @@ OBS_SPACE = gym.spaces.Box(-1.0, 1.0, (OBS,), np.float32)
 ACT_SPACE = gym.spaces.Discrete(ACTIONS)
 
 
-def wired():
-    """A recurrent wiring and its initial params, so every call in one test shares them."""
-    wiring = recurrent_wiring(OBS_SPACE, ACT_SPACE, (ENVS,), HIDDEN)
-    return wiring, wiring.init_params(jax.random.key(1))
+def network() -> RecPPONetwork:
+    return make_network(OBS_SPACE, ACT_SPACE, HIDDEN)
 
 
 def sequence() -> jax.Array:
@@ -51,10 +43,26 @@ def quiet() -> jax.Array:
     return jnp.zeros((MOMENTS, ENVS), bool)
 
 
-def stamped() -> PPOBatch:
-    """A batch whose every leaf reads ``sequence * 100 + moment``, so a cut can be read back."""
-    marks = jnp.array([[s * 100 + t for t in range(MOMENTS)] for s in range(ENVS)], jnp.float32)
-    return PPOBatch(PPOTransition(*(marks,) * 7), marks, marks)
+def initialised(assembly: RecPPONetwork) -> Params:
+    """Traced on the learn-time layout, which is the one with a time axis for the scan."""
+    example = RecPPOPolicyInput(jnp.zeros((1, ENVS, OBS)), jnp.zeros((1, ENVS), bool))
+    return assembly.init(jax.random.key(1), assembly.initialize_carry((ENVS,)), example)
+
+
+def over_sequence(assembly: RecPPONetwork, params: Params, moments: jax.Array, dones: jax.Array):
+    """The loss's forward pass: one fresh carry, the whole sequence at once."""
+    carry = assembly.initialize_carry(dones.shape[1:])
+    return assembly.apply(params, carry, RecPPOPolicyInput(moments, dones))
+
+
+def learner_forward(assembly: RecPPONetwork):
+    """What `main` hands the rule: the sequence pass with its carry hidden behind it."""
+
+    def apply_fn(params: Params, policy_input: RecPPOPolicyInput):
+        _, distribution, value = over_sequence(assembly, params, policy_input.observation, policy_input.dones)
+        return distribution, value
+
+    return apply_fn
 
 
 def trajectory() -> PPOTrajectory:
@@ -74,49 +82,45 @@ def trajectory() -> PPOTrajectory:
     )
 
 
-def rule_for(wiring) -> PPOUpdateRule:
+def rule_for(assembly: RecPPONetwork, num_minibatches: int = MINIBATCHES) -> PPOUpdateRule:
     return PPOUpdateRule(
-        wiring.apply_fn,
-        wiring.init_params,
+        learner_forward(assembly),
+        lambda key: initialised(assembly),
         optax.adam(1e-3),
         ENVS,
         MOMENTS,
         num_epochs=2,
-        num_minibatches=MINIBATCHES,
-        policy_input=wiring.policy_input,
-        minibatcher=wiring.minibatcher,
+        num_minibatches=num_minibatches,
+        policy_input=RecPPOPolicyInput,
+        minibatcher=Sequences(),
     )
 
 
-def test_stepping_the_act_path_matches_scanning_the_loss_path() -> None:
-    """The one property the whole arrangement rests on. A value a rollout recorded one step at a
-    time has to be the value the loss recomputes over the sequence, or the stored log probability
-    the ratio is built from belongs to a different network than the one being updated."""
-    wiring, params = wired()
-    moments, flags = sequence(), quiet()
+def test_stepping_one_moment_at_a_time_matches_scanning_the_sequence() -> None:
+    """The property the whole arrangement rests on. A value a rollout recorded one step at a time
+    has to be the value the loss recomputes over the sequence, or the stored log probability the
+    ratio is built from belongs to a different network than the one being updated."""
+    assembly, moments, flags = network(), sequence(), quiet()
+    params = initialised(assembly)
 
-    _, scanned = wiring.apply_fn(params, wiring.policy_input.of(moments, flags, flags))
+    _, _, scanned = over_sequence(assembly, params, moments, flags)
 
-    carry, stepped = wiring.carry, []
-    for moment in range(MOMENTS):
-        output, carry = wiring.act_fn(
-            params,
-            wiring.policy_input.of(moments[moment], flags[moment], flags[moment]),
-            jax.random.key(0),
-            carry,
-        )
-        stepped.append(output.value)
+    carry, stepped = assembly.initialize_carry((ENVS,)), []
+    for at in range(MOMENTS):
+        timed = tree.map(lambda leaf: leaf[None], RecPPOPolicyInput(moments[at], flags[at]))
+        carry, _, value = assembly.apply(params, carry, timed)
+        stepped.append(value[0])
 
     assert jnp.allclose(scanned, jnp.stack(stepped), atol=1e-5)
 
 
 def test_a_moment_reaches_every_moment_after_it() -> None:
     """Otherwise the scan is running down the wrong axis and the memory is of nothing."""
-    wiring, params = wired()
-    moments, flags = sequence(), quiet()
+    assembly, moments, flags = network(), sequence(), quiet()
+    params = initialised(assembly)
 
-    kept, _ = wiring.apply_fn(params, wiring.policy_input.of(moments, flags, flags))
-    nudged, _ = wiring.apply_fn(params, wiring.policy_input.of(moments.at[0].add(5.0), flags, flags))
+    _, kept, _ = over_sequence(assembly, params, moments, flags)
+    _, nudged, _ = over_sequence(assembly, params, moments.at[0].add(5.0), flags)
 
     assert not any(jnp.allclose(kept.logits[at], nudged.logits[at], atol=1e-6) for at in range(MOMENTS))
 
@@ -124,88 +128,55 @@ def test_a_moment_reaches_every_moment_after_it() -> None:
 def test_nothing_before_a_done_reaches_past_it() -> None:
     """The carry is replaced on the way out of the step whose episode ended, so the moments after a
     boundary read as though the ones before it never happened."""
-    wiring, params = wired()
-    moments, flags = sequence(), quiet()
+    assembly, moments, flags = network(), sequence(), quiet()
+    params = initialised(assembly)
     boundary = flags.at[1].set(True)
 
-    kept, _ = wiring.apply_fn(params, wiring.policy_input.of(moments, boundary, flags))
-    nudged, _ = wiring.apply_fn(params, wiring.policy_input.of(moments.at[0].add(5.0), boundary, flags))
+    _, kept, _ = over_sequence(assembly, params, moments, boundary)
+    _, nudged, _ = over_sequence(assembly, params, moments.at[0].add(5.0), boundary)
 
     unchanged = [bool(jnp.allclose(kept.logits[at], nudged.logits[at], atol=1e-6)) for at in range(MOMENTS)]
     assert unchanged == [False, False, True, True, True, True]
 
 
-def test_sequences_keeps_every_sequence_whole_and_in_order() -> None:
-    """A scan over a minibatch has to be a scan over moments one environment really lived through."""
-    cut = Sequences().cut(jax.random.key(0), stamped(), MINIBATCHES)
+def test_a_carry_is_held_at_the_prefix_a_stepper_reports() -> None:
+    """ADR-0012: the assembly is told a prefix, never an agent count, so a team's carry is per agent."""
+    assembly = network()
 
-    for minibatch in range(MINIBATCHES):
-        for column in np.asarray(cut.advantages[minibatch]).T:
-            assert len({int(mark // 100) for mark in column}) == 1, "a column mixes sequences"
-            assert [int(mark % 100) for mark in column] == list(range(MOMENTS)), "a column is out of order"
+    assert assembly.initialize_carry((ENVS,)).shape == (ENVS, HIDDEN)
+    assert assembly.initialize_carry((ENVS, 3)).shape == (ENVS, 3, HIDDEN)
 
 
-def test_sequences_cuts_time_major_and_steps_cuts_time_away() -> None:
-    """`ResetRecurrence` scans the leading axis, so a minibatch of sequences has to lead with time."""
-    sequences = Sequences().cut(jax.random.key(0), stamped(), MINIBATCHES)
-    steps = Steps().cut(jax.random.key(0), stamped(), MINIBATCHES)
+def test_the_carry_comes_back_ready_for_the_moment_after_the_one_it_ran() -> None:
+    """What lets a `RecPolicy` hold it without knowing which flags to apply first."""
+    assembly = network()
+    params = initialised(assembly)
+    fresh = assembly.initialize_carry((ENVS,))
+    ended = jnp.ones((1, ENVS), bool)
 
-    assert sequences.advantages.shape == (MINIBATCHES, MOMENTS, ENVS // MINIBATCHES)
-    assert steps.advantages.shape == (MINIBATCHES, ENVS * MOMENTS // MINIBATCHES)
+    after_done, _, _ = assembly.apply(params, fresh, RecPPOPolicyInput(sequence()[:1], ended))
 
-
-def test_each_minibatcher_pools_what_it_cuts() -> None:
-    """What ``num_minibatches`` has to divide, which is the only thing `isvalid` needs off one."""
-    assert Steps().pool(ENVS, MOMENTS) == ENVS * MOMENTS
-    assert Sequences().pool(ENVS, MOMENTS) == ENVS
+    assert jnp.allclose(after_done, fresh, atol=1e-6)
 
 
-def test_sequences_loses_no_step_and_duplicates_none() -> None:
-    cut = Sequences().cut(jax.random.key(0), stamped(), MINIBATCHES)
-
-    assert sorted(np.asarray(cut.advantages).ravel().tolist()) == sorted(
-        np.asarray(stamped().advantages).ravel().tolist()
-    )
-
-
-@pytest.mark.parametrize("num_minibatches", [ENVS + 1, ENVS - 1])
-def test_a_sequence_pool_refuses_a_minibatch_count_it_cannot_divide(num_minibatches: int) -> None:
-    """The divisibility a recurrent run needs is over sequences, not steps, so a count that was fine
-    for a flat pool can be impossible here — and `isvalid` has to say so rather than reshape badly."""
-    wiring, _ = wired()
-    rule = rule_for(wiring)
-
-    assert not replace(rule, num_minibatches=num_minibatches).isvalid()
-
-
-def test_a_recurrent_update_descends_and_reports_finite_metrics() -> None:
-    wiring, _ = wired()
-    rule = rule_for(wiring)
+def test_a_recurrent_update_moves_the_params_and_reports_finite_metrics() -> None:
+    assembly = network()
+    rule = rule_for(assembly)
     assert rule.isvalid()
     state = rule.init(jax.random.key(4))
 
     advanced, metrics = jax.jit(rule.update)(state, trajectory())
 
     assert all(bool(jnp.all(jnp.isfinite(jnp.asarray(value)))) for value in metrics.values())
-    assert not jax.tree.all(
-        jax.tree.map(lambda before, after: bool(jnp.array_equal(before, after)), state.params, advanced.params)
-    )
+    moved = jax.tree.map(lambda before, after: bool(jnp.array_equal(before, after)), state.params, advanced.params)
+    assert not jax.tree.all(moved)
 
 
-def test_only_the_recurrent_wiring_brings_a_carry() -> None:
-    """What `make_policy` reads to decide which Policy threads state, so a feed-forward run never
-    grows a carry and a recurrent one can never be built without one."""
-    carry = recurrent_wiring(OBS_SPACE, ACT_SPACE, (ENVS,), HIDDEN).carry
-
-    assert feedforward_wiring(OBS_SPACE, ACT_SPACE).carry is None
-    assert carry is not None and carry.shape == (ENVS, HIDDEN)
-
-
-def test_each_wiring_names_the_input_its_assembly_reads() -> None:
-    """The pairing that cannot be mixed: an input with no flags cannot reset a carry, and one with
-    them has nothing to say to a feed-forward Torso."""
-    assert feedforward_wiring(OBS_SPACE, ACT_SPACE).policy_input is PPOPolicyInput
-    assert recurrent_wiring(OBS_SPACE, ACT_SPACE, (ENVS,), HIDDEN).policy_input is RecPPOPolicyInput
+@pytest.mark.parametrize("num_minibatches", [ENVS + 1, ENVS - 1])
+def test_a_rule_over_sequences_refuses_a_minibatch_count_it_cannot_divide(num_minibatches: int) -> None:
+    """The divisibility a recurrent run needs is over sequences, not steps, so a count that was fine
+    for a flat pool can be impossible here — and `isvalid` has to say so rather than reshape badly."""
+    assert not rule_for(network(), num_minibatches).isvalid()
 
 
 def test_an_input_reads_both_boundary_flags_as_one_done() -> None:
@@ -214,3 +185,19 @@ def test_an_input_reads_both_boundary_flags_as_one_done() -> None:
     trunc = jnp.zeros((ENVS,), bool).at[1].set(True)
 
     assert jnp.array_equal(RecPPOPolicyInput.of(jnp.zeros((ENVS, OBS)), term, trunc).dones, term | trunc)
+
+
+@pytest.mark.parametrize(
+    ("obs_space", "expected"),
+    [
+        (OBS_SPACE, DiscreteHead),
+        (
+            gym.spaces.Dict({"observation": OBS_SPACE, "action_mask": gym.spaces.MultiBinary(ACTIONS)}),
+            MaskedDiscreteHead,
+        ),
+    ],
+    ids=["plain", "masked"],
+)
+def test_the_recurrent_assembly_picks_a_head_the_way_the_feed_forward_one_does(obs_space, expected) -> None:
+    """The Head choice is shared with `ppo.make_head`, so recurrence changes nothing about it."""
+    assert type(make_network(obs_space, ACT_SPACE).policy) is expected

@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 from flax.typing import Dtype
 
+from brrrl.types import Array
+
 type Carry = Any
 
 # The cell's params are created once and broadcast, so their key must not be split per step.
@@ -43,7 +45,7 @@ class ResetRecurrence(nn.Module):
 
     @partial(nn.scan, variable_broadcast="params", split_rngs=UNSPLIT_PARAMS, in_axes=0, out_axes=0)
     @nn.compact
-    def __call__(self, carry: Carry, inputs: jax.Array, dones: jax.Array) -> tuple[Carry, jax.Array]:
+    def __call__(self, carry: Carry, inputs: jax.Array, dones: Array) -> tuple[Carry, jax.Array]:
         carry, emb = self.cell(features=self.hidden_size, param_dtype=self.param_dtype, dtype=self.dtype)(carry, inputs)
         fresh = self.initialize_carry(dones.shape)
         carry = jax.tree.map(lambda init, curr: jnp.where(dones[..., None], init, curr), fresh, carry)
