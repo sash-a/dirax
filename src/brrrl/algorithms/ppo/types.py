@@ -10,13 +10,38 @@ import optree as tree
 
 from brrrl.types import TRANSITIONS, Array, ArrayTree, Params, PRNGKey
 
-type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
+type PPOApply = Callable[[Params, Any], tuple[distrax.Distribution, jax.Array]]
+type RecPPOApply = Callable[[Params, ArrayTree, "RecPPOPolicyInput"], tuple[ArrayTree, distrax.Distribution, jax.Array]]
 
 
 class PPOPolicyOutput(NamedTuple):
     action: Array
     log_prob: Array
     value: Array
+
+
+class PPOPolicyInput(NamedTuple):
+    observation: ArrayTree
+
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        return cls(obs)
+
+
+class RecPPOPolicyInput(NamedTuple):
+    observation: ArrayTree
+    dones: Array
+
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        return cls(obs, term | trunc)
+
+
+class RecPPOPolicyOutput(NamedTuple):
+    action: Array
+    log_prob: Array
+    value: Array
+    hstate: ArrayTree
 
 
 class PPOTransition(NamedTuple):

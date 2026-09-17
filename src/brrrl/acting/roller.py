@@ -7,11 +7,11 @@ from numpy.typing import ArrayLike
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
 from brrrl.metrics.timer import AggregatedElapsed, Timer
-from brrrl.types import TRANSITIONS, Metrics, Rollout, Trajectory, Transition
+from brrrl.types import TRANSITIONS, ArrayTree, Metrics, PolicyInput, Rollout, Trajectory, Transition
 from brrrl.wrappers.statistics import env_stats, episode_stats
 
 
-class Roller[Obs, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
+class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
     """The one rollout loop, shared by every algorithm.
 
     It owns the autoreset discipline, the bootstrapped slot, the parameter Version and the episode
@@ -22,8 +22,9 @@ class Roller[Obs, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
     def __init__(
         self,
         stepper: EnvStepper[Obs, ArrayLike],
-        policy: Policy[Obs, O],
+        policy: Policy[I, O],
         accumulator: TrajectoryAccumulator,
+        policy_input: type[I],
         transition: type[Tran],
         trajectory: type[Traj],
         num_steps: int,
@@ -34,6 +35,7 @@ class Roller[Obs, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
         self.accumulator = accumulator
         self.trajectory = trajectory
         self.transition = transition
+        self.policy_input = policy_input
         self.num_steps = num_steps
         self.width = (stepper.num_envs, stepper.num_agents) if stepper.num_agents > 1 else (stepper.num_envs,)
         self.timer = Timer(AggregatedElapsed)
@@ -42,7 +44,8 @@ class Roller[Obs, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
         self.prev_obs, _ = stepper.reset(seed=seed)
         self.prev_term = np.zeros(self.width, np.bool_)
         self.prev_trunc = np.zeros(self.width, np.bool_)
-        self.decision, self.version = self.policy.act(self.prev_obs, self.prev_term | self.prev_trunc)
+        policy_input = self.policy_input.of(self.prev_obs, self.prev_term, self.prev_trunc)
+        self.decision, self.version = self.policy.act(policy_input)
 
     @property
     def num_transitions(self) -> int:
@@ -68,7 +71,7 @@ class Roller[Obs, O: PolicyOutput, Tran: Transition, Traj: Trajectory]:
                 infos.append(info)
                 versions.append(self.version)
             with self.timer("policy_act_time"):
-                self.decision, self.version = self.policy.act(obs, term | trunc)
+                self.decision, self.version = self.policy.act(self.policy_input.of(obs, term, trunc))
 
         with self.timer("episode_bookkeeping_time"):
             no_reward = np.zeros(self.width)

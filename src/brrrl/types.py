@@ -10,7 +10,7 @@ type Params = VariableDict
 type PRNGKey = jax.Array
 type Metrics = Mapping[str, ArrayLike]
 type NestedMetrics = Mapping[str, Any]
-type ArrayTree = NDArray | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
+type ArrayTree = Array | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
 type StepResult[Obs] = tuple[Obs, NDArray[np.floating], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]
 type Array = NDArray | jax.Array
 type UpdateFn[S: UpdateState, T: Trajectory] = Callable[[S, T], tuple[S, Metrics]]
@@ -25,12 +25,19 @@ class PolicyOutput(Protocol):
     def action(self) -> Array: ...
 
 
-class Transition[Obs, O: PolicyOutput](Protocol):
-    """One slot. The flags describe the observation beside them; the rest describe the step out of it.
+class PolicyInput(Protocol):
+    """What a Policy is handed for one step."""
 
-    Every leaf is an `Array` rather than the numpy type a stepper reported, because one Transition
-    type is read on both sides of echo: numpy where a Roller builds it, jax inside the jitted update.
-    """
+    @property
+    def observation(self) -> ArrayTree: ...
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        """One input from an observation and the flags that describe it."""
+        ...
+
+
+class Transition[Obs, O: PolicyOutput](Protocol):
+    """One slot in a buffer. Observation, terminated and truncated are from step t, reward and action are from step t+1."""
 
     @property
     def observation(self) -> Obs: ...

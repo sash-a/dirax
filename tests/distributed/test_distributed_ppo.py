@@ -27,7 +27,7 @@ from jax.sharding import Mesh, PartitionSpec
 
 from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, make_network
-from brrrl.algorithms.ppo.types import PPOApply, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyInput, PPOTrajectory, PPOTransition, PPOUpdateState, example
 from brrrl.distributed.components.echo import ReplayServer, echo_example
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.types import Params, PRNGKey, Rollout
@@ -46,7 +46,8 @@ ACT_SPACE = gym.spaces.Discrete(ACTIONS)
 @pytest.fixture(scope="module")
 def network() -> tuple[PPOApply, Params]:
     assembly = make_network(OBS_SPACE, ACT_SPACE)
-    return cast(PPOApply, assembly.apply), assembly.init(jax.random.key(0), OBS_SPACE.sample())
+    example = PPOPolicyInput(OBS_SPACE.sample())
+    return cast(PPOApply, assembly.apply), assembly.init(jax.random.key(0), example)
 
 
 def optimizer() -> optax.GradientTransformation:
@@ -58,7 +59,7 @@ def init_params(key: PRNGKey) -> Params:
     """What a rule takes in place of an obs space: an Assembly paired with an example to trace it
     on. Built fresh rather than taken from the fixture, which the same key makes the same params as.
     """
-    return make_network(OBS_SPACE, ACT_SPACE).init(key, OBS_SPACE.sample())
+    return make_network(OBS_SPACE, ACT_SPACE).init(key, PPOPolicyInput(OBS_SPACE.sample()))
 
 
 def rule(apply_fn: PPOApply, rollouts: int) -> PPOUpdateRule:
@@ -83,7 +84,7 @@ def acted(network: tuple[PPOApply, Params], rollouts: int) -> PPOTrajectory:
     key = jax.random.key(1)
     width = (rollouts, SLOTS, NUM_ENVS)
     observation = np.asarray(jax.random.uniform(key, (*width, OBS), jnp.float32, -1.0, 1.0))
-    distribution, value = apply_fn(params, observation)
+    distribution, value = apply_fn(params, PPOPolicyInput(observation))
     action = distribution.sample(seed=key)
     sampled = PPOTrajectory(
         PPOTransition(

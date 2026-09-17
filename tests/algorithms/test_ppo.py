@@ -29,8 +29,22 @@ import pytest
 
 from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.estimators import generalised_advantages
-from brrrl.algorithms.ppo.ppo import PPOApply, PPONetwork, PPOUpdateRule, explained_variance, make_network, normalise
-from brrrl.algorithms.ppo.types import PPOBatch, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.ppo import (
+    PPOApply,
+    PPONetwork,
+    PPOUpdateRule,
+    explained_variance,
+    make_network,
+    normalise,
+)
+from brrrl.algorithms.ppo.types import (
+    PPOBatch,
+    PPOPolicyInput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.types import TRANSITIONS, Array, Params, PRNGKey
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
@@ -109,7 +123,7 @@ EVERY = {
 def initialiser(space: Space, network: nn.Module) -> Callable[[PRNGKey], Params]:
     """What a rule takes in place of an obs space: an Assembly paired with an example to trace it
     on. A network is shape-polymorphic, so neither half means `init` without the other."""
-    return lambda key: network.init(key, space.observation(jnp.zeros(shaped(space, 1))))
+    return lambda key: network.init(key, PPOPolicyInput(space.observation(jnp.zeros(shaped(space, 1)))))
 
 
 def rule_over(space: Space, network: nn.Module) -> PPOUpdateRule:
@@ -139,7 +153,7 @@ def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
     """
     key = jax.random.key(1)
     observation = space.observation(jax.random.normal(key, shaped(space, BATCH, SLOTS)))
-    distribution, value = network.apply(params, observation)
+    distribution, value = network.apply(params, PPOPolicyInput(observation))
     action = distribution.sample(seed=key)
 
     width = (BATCH, SLOTS, *space.agent_axis)
@@ -366,7 +380,7 @@ def test_shuffling_loses_no_step_and_duplicates_none(rule: PPOUpdateRule, trajec
     labelled = jnp.arange(BATCH * ROLLOUT, dtype=jnp.float32).reshape(BATCH, ROLLOUT)
     batch = PPOBatch(jax.tree.map(lambda leaf: leaf[:, :-1], trajectory.transitions), labelled, labelled)
 
-    minibatches = rule.shuffle_and_minibatch(jax.random.key(4), batch)
+    minibatches = rule.minibatcher.cut(jax.random.key(4), batch, rule.num_minibatches)
 
     minibatch_size = BATCH * ROLLOUT // MINIBATCHES
 
@@ -385,7 +399,7 @@ def test_shuffling_keeps_each_step_whole(rule: PPOUpdateRule, trajectory) -> Non
     transitions = jax.tree.map(lambda leaf: leaf[:, :-1], trajectory.transitions)
     batch = PPOBatch(transitions, transitions.value, transitions.value)
 
-    minibatches = rule.shuffle_and_minibatch(jax.random.key(5), batch)
+    minibatches = rule.minibatcher.cut(jax.random.key(5), batch, rule.num_minibatches)
 
     assert np.allclose(minibatches.advantages, minibatches.transitions.value)
 
@@ -427,7 +441,8 @@ def test_a_value_carries_whatever_axis_its_observation_did(space: Space, network
     leading axes, so a team's observation comes back as a value per agent and a single agent's as one
     value — which is the shape the loss needs either way, because it compares a value against a
     reward slot for slot and the stepper reported both the same way."""
-    distribution, value = network.apply(params, space.observation(jnp.zeros(shaped(space, BATCH, SLOTS))))
+    policy_input = PPOPolicyInput(space.observation(jnp.zeros(shaped(space, BATCH, SLOTS))))
+    distribution, value = network.apply(params, policy_input)
     action = distribution.sample(seed=jax.random.key(6))
 
     assert value.shape == (BATCH, SLOTS, *space.agent_axis)
@@ -442,12 +457,12 @@ def test_one_network_serves_both_arities_unchanged() -> None:
     network = make_network(alone.observation_space, alone.action_space)
     apply = cast(PPOApply, network.apply)
 
-    one = network.init(jax.random.key(0), jnp.zeros(shaped(alone, BATCH)))
-    many = network.init(jax.random.key(0), jnp.zeros(shaped(team, BATCH)))
+    one = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(alone, BATCH))))
+    many = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(team, BATCH))))
 
     assert jax.tree.all(jax.tree.map(lambda a, b: a.shape == b.shape, one, many))
-    _, single_value = apply(one, np.zeros(shaped(alone, BATCH), np.float32))
-    _, team_value = apply(many, np.zeros(shaped(team, BATCH), np.float32))
+    _, single_value = apply(one, PPOPolicyInput(np.zeros(shaped(alone, BATCH), np.float32)))
+    _, team_value = apply(many, PPOPolicyInput(np.zeros(shaped(team, BATCH), np.float32)))
     assert single_value.shape == (BATCH,)
     assert team_value.shape == (BATCH, TEAM)
 
