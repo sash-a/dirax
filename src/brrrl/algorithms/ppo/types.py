@@ -8,7 +8,7 @@ import numpy as np
 import optax
 import optree as tree
 
-from brrrl.types import TRANSITIONS, Array, ArrayTree, Params, PRNGKey
+from brrrl.types import HIDDEN_STATE, TRANSITIONS, Array, ArrayTree, Params, PRNGKey
 
 type PPOApply = Callable[[Params, Any], tuple[distrax.Distribution, jax.Array]]
 type RecPPOApply = Callable[[Params, ArrayTree, "RecPPOPolicyInput"], tuple[ArrayTree, distrax.Distribution, jax.Array]]
@@ -62,6 +62,11 @@ class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
 
 
+class RecPPOTrajectory(NamedTuple):
+    transitions: PPOTransition
+    hidden_state: ArrayTree
+
+
 class PPOBatch(NamedTuple):
     transitions: PPOTransition
     advantages: Array
@@ -87,11 +92,6 @@ def example(rollout_length: int, prefix: tuple[int, ...], obs_space: gym.Space, 
         obs_space: One env's observation space, not the batched one.
         act_space: One agent's action space. `brrrl.wrappers.agents.one_agent` of what the env
             declares.
-
-    The observation is the one field that does not take the whole prefix. It keeps whatever shape
-    its env gave it, so an env whose agents each observe for themselves already carries the agent
-    axis there and one whose agents share a view does not — nothing in the stepper chain touches an
-    observation, and unpacking it is the algorithm's job (ADR-0008).
     """
     traj_len = rollout_length + 1  # because there is a final bootstrap step
     num_envs = prefix[0]
@@ -112,3 +112,31 @@ def example(rollout_length: int, prefix: tuple[int, ...], obs_space: gym.Space, 
     )
 
     return {TRANSITIONS: trajectory}
+
+
+def rec_example(
+    rollout_length: int,
+    hidden_size: int,
+    prefix: tuple[int, ...],
+    obs_space: gym.Space,
+    act_space: gym.Space,
+) -> dict[str, Any]:
+    """Makes a recurrent example for echo.
+
+    Args:
+       rollout_length: Transitions per rollout. One slot more than this is filled, for the trailing
+           bootstrap step.
+       hidden_size: size of the flat hidden state. This function does not support non-flat array hidden states.
+       prefix: The leading shape every field a stepper reports carries — ``(E, A)`` for an env with
+           a team acting in it, and ``(E,)`` for one with a single agent, which has no agent axis at
+           all. `brrrl.acting.env_stepper.prefix` composes it. The env axis leads either way, so the
+           observation takes its first entry and nothing else.
+       obs_space: One env's observation space, not the batched one.
+       act_space: One agent's action space. `brrrl.wrappers.agents.one_agent` of what the env
+           declares.
+    """
+    transition = example(rollout_length, prefix, obs_space, act_space)
+    # The leading 1 is what makes this a single-item timescale to the accumulator, and what lands
+    # in the time slot when `batch_major` rearranges it.
+    hidden = {HIDDEN_STATE: np.empty((1, *prefix, hidden_size), np.float32)}
+    return transition | hidden

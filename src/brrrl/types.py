@@ -18,6 +18,7 @@ type UpdateFn[S: UpdateState, T: Trajectory] = Callable[[S, T], tuple[S, Metrics
 
 TRANSITIONS = "transitions"
 """A Trajectory's timescale name. It is its field name too, so the accumulator rebuilds it."""
+HIDDEN_STATE = "hidden_state"
 
 
 class PolicyOutput(Protocol):

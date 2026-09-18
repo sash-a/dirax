@@ -7,7 +7,7 @@ from numpy.typing import ArrayLike
 from brrrl.acting.env_stepper import EnvStepper
 from brrrl.acting.policy import Policy, PolicyOutput
 from brrrl.metrics.timer import AggregatedElapsed, Timer
-from brrrl.types import TRANSITIONS, ArrayTree, Metrics, PolicyInput, Rollout, Trajectory, Transition
+from brrrl.types import HIDDEN_STATE, TRANSITIONS, ArrayTree, Metrics, PolicyInput, Rollout, Trajectory, Transition
 from brrrl.wrappers.statistics import env_stats, episode_stats
 
 
@@ -44,6 +44,9 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
         self.prev_obs, _ = stepper.reset(seed=seed)
         self.prev_term = np.zeros(self.width, np.bool_)
         self.prev_trunc = np.zeros(self.width, np.bool_)
+        # Sampled beside the act it pairs with: a Policy holds the carry its *next* act will use,
+        # and only a Roller knows which act fills which slot.
+        self.policy_state = self.policy.state()
         policy_input = self.policy_input.of(self.prev_obs, self.prev_term, self.prev_trunc)
         self.decision, self.version = self.policy.act(policy_input)
 
@@ -59,6 +62,10 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
     def rollout(self) -> tuple[Rollout[Traj], Metrics]:
         infos, versions = [], []
         start_time = time.monotonic()
+        # The carry the act behind slot 0 consumed, sampled a rollout ago beside that act.
+        if self.policy_state is not None:
+            self.accumulator.add(HIDDEN_STATE, self.policy_state)
+
         for _ in range(self.num_steps):
             with self.timer("env_step_time"):
                 obs, reward, term, trunc, info = self.stepper.step(self.decision.action)
@@ -71,6 +78,7 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
                 infos.append(info)
                 versions.append(self.version)
             with self.timer("policy_act_time"):
+                self.policy_state = self.policy.state()
                 self.decision, self.version = self.policy.act(self.policy_input.of(obs, term, trunc))
 
         with self.timer("episode_bookkeeping_time"):

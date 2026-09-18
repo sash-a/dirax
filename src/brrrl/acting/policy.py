@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Protocol, final
+from typing import Any, Protocol, final
 
 import jax
 
@@ -12,7 +12,13 @@ type RecActFn[I: PolicyInput, O: PolicyOutput] = Callable[[Params, I, PRNGKey, A
 
 
 class Policy[I: PolicyInput, O: PolicyOutput](Protocol):
-    def act(self, policy_input: I) -> tuple[O, int]: ...
+    def act(self, policy_input: I) -> tuple[O, int]:
+        """Acting function"""
+        ...
+
+    def state(self) -> Any:
+        """Allows callers to obtain a hidden state."""
+        ...
 
 
 @final
@@ -41,6 +47,9 @@ class FFPolicy[I: PolicyInput, O: PolicyOutput]:
         version = self.sync()
         self.key, key = jax.random.split(self.key)
         return jax.device_get(self.act_fn(self.params.value, policy_input, key)), version
+
+    def state(self) -> None:
+        """Feedforward policies have no hidden state."""
 
 
 @final
@@ -76,3 +85,6 @@ class RecPolicy[I: PolicyInput, O: PolicyOutput]:
         self.key, key = jax.random.split(self.key)
         output, self.carry = self.act_fn(self.params.value, policy_input, key, self.carry)
         return jax.device_get(output), version
+
+    def state(self) -> ArrayTree:
+        return self.carry

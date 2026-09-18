@@ -17,11 +17,11 @@ from brrrl.acting.roller import Roller
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, TORSO_LAYERS, PPOUpdateRule, rescaled
 from brrrl.algorithms.ppo.types import (
     PPOPolicyOutput,
-    PPOTrajectory,
     PPOTransition,
     RecPPOApply,
     RecPPOPolicyInput,
-    example,
+    RecPPOTrajectory,
+    rec_example,
 )
 from brrrl.learning.minibatcher import Sequences
 from brrrl.metrics import default_logger
@@ -104,7 +104,7 @@ def main() -> None:
     stepper = AsyncStepper([make_env] * num_envs, num_agents, wrap=partial(NormalizeReward, gamma=gamma))
     act_space = one_agent(env.action_space, num_agents)
     width = prefix(stepper.num_envs, num_agents)
-    example_transition = example(rollout_len, width, env.observation_space, act_space)
+    example_transition = rec_example(rollout_len, hidden_size, width, env.observation_space, act_space)
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space, hidden_size)
@@ -158,7 +158,7 @@ def main() -> None:
     param_source = ParamStore(VersionedParams(update_state.params, 0))
     policy = RecPolicy(jax.jit(actor_forward), network.initialize_carry(width), param_source, policy_key)
     roller = Roller(
-        stepper, policy, traj_accumulator, RecPPOPolicyInput, PPOTransition, PPOTrajectory, rollout_len, seed
+        stepper, policy, traj_accumulator, RecPPOPolicyInput, PPOTransition, RecPPOTrajectory, rollout_len, seed
     )
 
     actor_recorder, learner_recorder = default_logger(
