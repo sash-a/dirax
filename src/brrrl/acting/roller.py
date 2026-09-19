@@ -66,7 +66,7 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
         if self.policy_state is not None:
             self.accumulator.add(HIDDEN_STATE, self.policy_state)
 
-        for _ in range(self.num_steps):
+        for i in range(self.num_steps):
             with self.timer("env_step_time"):
                 obs, reward, term, trunc, info = self.stepper.step(self.decision.action)
             with self.timer("env_step_bookkeeping_time"):
@@ -78,7 +78,8 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
                 infos.append(info)
                 versions.append(self.version)
             with self.timer("policy_act_time"):
-                self.policy_state = self.policy.state()
+                if i == self.num_steps - 1:
+                    self.policy_state = self.policy.state()
                 self.decision, self.version = self.policy.act(self.policy_input.of(obs, term, trunc))
 
         with self.timer("episode_bookkeeping_time"):

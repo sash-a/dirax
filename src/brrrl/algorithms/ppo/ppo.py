@@ -22,6 +22,7 @@ from brrrl.acting.roller import Roller
 from brrrl.algorithms.ppo.types import (
     PPOApply,
     PPOBatch,
+    PPOForward,
     PPOPolicyInput,
     PPOPolicyOutput,
     PPOTrajectory,
@@ -38,7 +39,7 @@ from brrrl.networks.distribution import normalised_entropy
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
-from brrrl.types import Array, Metrics, Params, PolicyInput, PRNGKey, VersionedParams
+from brrrl.types import Array, ArrayTree, Metrics, Params, PolicyInput, PRNGKey, VersionedParams
 from brrrl.utils.duration import EveryTicks
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
@@ -48,7 +49,7 @@ MAX_GRAD_NORM = 0.5
 ADAM_EPS = 1e-5
 TORSO_LAYERS = (64, 64)
 
-type EpochCarry = tuple[PPOUpdateState, PPOBatch]
+type EpochCarry = tuple[PPOUpdateState, PPOBatch, ArrayTree]
 type LossInfo = dict[str, jax.Array]
 
 
@@ -120,7 +121,8 @@ class PPOUpdateRule:
         )
         value_targets = advantages + trajectory.transitions.value[:, :-1]
         batch = PPOBatch(tree.map(lambda x: x[:, :-1], trajectory.transitions), advantages, value_targets)
-        (state, _), loss_infos = jax.lax.scan(self.epoch, (state, batch), None, self.num_epochs)
+        per_rollout = trajectory.per_rollout()  # The per rollout data like hidden state, stored next to the batch
+        (state, _, _), loss_infos = jax.lax.scan(self.epoch, (state, batch, per_rollout), None, self.num_epochs)
         mask = ~(batch.transitions.terminated | batch.transitions.truncated)
         return state, tree.map(jnp.mean, loss_infos) | self.batch_metrics(batch, mask) | self.drift_metrics(loss_infos)
 
@@ -147,24 +149,27 @@ class PPOUpdateRule:
         }
 
     def epoch(self, carry: EpochCarry, _: None) -> tuple[EpochCarry, LossInfo]:
-        state, batch = carry
+        state, batch, per_rollout = carry
         key, shuffle_key = jax.random.split(state.key)
-        minibatches = self.minibatcher.cut(shuffle_key, batch, self.num_minibatches)
+        minibatches = self.minibatcher.cut(shuffle_key, batch, per_rollout, self.num_minibatches)
         state, loss_info = jax.lax.scan(self.minibatch, state._replace(key=key), minibatches)
-        return (state, batch), loss_info
+        return (state, batch, per_rollout), loss_info
 
-    def minibatch(self, state: PPOUpdateState, batch: PPOBatch) -> tuple[PPOUpdateState, LossInfo]:
-        grads, loss_info = jax.grad(self.loss, has_aux=True)(state.params, batch)
+    def minibatch(
+        self, state: PPOUpdateState, minibatch: tuple[PPOBatch, ArrayTree]
+    ) -> tuple[PPOUpdateState, LossInfo]:
+        batch, per_rollout = minibatch
+        grads, loss_info = jax.grad(self.loss, has_aux=True)(state.params, batch, per_rollout)
         updates, opt_state = self.optimizer.update(grads, state.opt_state, state.params)
         params = cast(Params, optax.apply_updates(state.params, updates))
         metrics = loss_info | self.minibatch_metrics(state, grads, updates)
         return state._replace(params=params, opt_state=opt_state), metrics
 
-    def loss(self, params: Params, batch: PPOBatch) -> tuple[jax.Array, LossInfo]:
+    def loss(self, params: Params, batch: PPOBatch, per_rollout: ArrayTree) -> tuple[jax.Array, LossInfo]:
         transitions = batch.transitions
         mask = ~(transitions.terminated | transitions.truncated)
         policy_input = self.policy_input.of(transitions.observation, transitions.terminated, transitions.truncated)
-        distribution, value = self.apply_fn(params, policy_input)
+        distribution, value = self.apply_fn(params, policy_input, per_rollout)
 
         advantages = normalise(batch.advantages, mask)
         log_ratio = distribution.log_prob(transitions.action) - transitions.log_prob
@@ -257,7 +262,8 @@ def main() -> None:
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space)
-    apply_fn = cast(PPOApply, network.apply)
+    # A feed-forward assembly reads one input and opens with nothing, so it drops the context.
+    apply_fn: PPOApply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
     example_input = PPOPolicyInput(env.observation_space.sample())
     init_params = lambda weights_key: network.init(weights_key, example_input)
     # Annealed to zero across the run
@@ -265,7 +271,7 @@ def main() -> None:
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
 
     def actor_forward(params: Params, policy_input: PPOPolicyInput, key: PRNGKey) -> PPOPolicyOutput:
-        distr, value = apply_fn(params, policy_input)
+        distr, value = apply_fn(params, policy_input, ())
         action = distr.sample(seed=key)
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action, logp, value)

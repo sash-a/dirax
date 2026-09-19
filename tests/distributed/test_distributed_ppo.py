@@ -27,7 +27,15 @@ from jax.sharding import Mesh, PartitionSpec
 
 from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, make_network
-from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyInput, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.types import (
+    PPOApply,
+    PPOForward,
+    PPOPolicyInput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
 from brrrl.distributed.components.echo import ReplayServer, echo_example
 from brrrl.distributed.components.update_rule import DataParallelUpdateRule
 from brrrl.types import Params, PRNGKey, Rollout
@@ -47,7 +55,9 @@ ACT_SPACE = gym.spaces.Discrete(ACTIONS)
 def network() -> tuple[PPOApply, Params]:
     assembly = make_network(OBS_SPACE, ACT_SPACE)
     example = PPOPolicyInput(OBS_SPACE.sample())
-    return cast(PPOApply, assembly.apply), assembly.init(jax.random.key(0), example)
+    forward = cast(PPOForward, assembly.apply)
+    apply_fn: PPOApply = lambda params, policy_input, per_rollout: forward(params, policy_input)
+    return apply_fn, assembly.init(jax.random.key(0), example)
 
 
 def optimizer() -> optax.GradientTransformation:
@@ -84,7 +94,7 @@ def acted(network: tuple[PPOApply, Params], rollouts: int) -> PPOTrajectory:
     key = jax.random.key(1)
     width = (rollouts, SLOTS, NUM_ENVS)
     observation = np.asarray(jax.random.uniform(key, (*width, OBS), jnp.float32, -1.0, 1.0))
-    distribution, value = apply_fn(params, PPOPolicyInput(observation))
+    distribution, value = apply_fn(params, PPOPolicyInput(observation), ())
     action = distribution.sample(seed=key)
     sampled = PPOTrajectory(
         PPOTransition(

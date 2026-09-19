@@ -17,7 +17,7 @@ from jax import tree
 
 from brrrl.algorithms.ppo.ppo import PPOUpdateRule
 from brrrl.algorithms.ppo.recurrent import RecPPONetwork, make_network
-from brrrl.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput
+from brrrl.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput, RecPPOTrajectory
 from brrrl.learning.minibatcher import Sequences
 from brrrl.networks.head import DiscreteHead, MaskedDiscreteHead
 from brrrl.types import Params
@@ -49,27 +49,33 @@ def initialised(assembly: RecPPONetwork) -> Params:
     return assembly.init(jax.random.key(1), assembly.initialize_carry((ENVS,)), example)
 
 
-def over_sequence(assembly: RecPPONetwork, params: Params, moments: jax.Array, dones: jax.Array):
-    """The loss's forward pass: one fresh carry, the whole sequence at once."""
-    carry = assembly.initialize_carry(dones.shape[1:])
+def over_sequence(assembly: RecPPONetwork, params: Params, moments: jax.Array, dones: jax.Array, per_rollout=None):
+    """The loss's forward pass: the whole sequence at once, from the carry recorded for it."""
+    carry = assembly.initialize_carry(dones.shape[1:]) if per_rollout is None else per_rollout
     return assembly.apply(params, carry, RecPPOPolicyInput(moments, dones))
 
 
 def learner_forward(assembly: RecPPONetwork):
     """What `main` hands the rule: the sequence pass with its carry hidden behind it."""
 
-    def apply_fn(params: Params, policy_input: RecPPOPolicyInput):
-        _, distribution, value = over_sequence(assembly, params, policy_input.observation, policy_input.dones)
+    def apply_fn(params: Params, policy_input: RecPPOPolicyInput, per_rollout):
+        _, distribution, value = over_sequence(
+            assembly, params, policy_input.observation, policy_input.dones, per_rollout
+        )
         return distribution, value
 
     return apply_fn
 
 
-def trajectory() -> PPOTrajectory:
-    """One rollout's slots, shaped as a Roller submits them: ``(rollouts, time, envs, ...)``."""
+def trajectory() -> RecPPOTrajectory:
+    """One rollout's slots, shaped as a Roller submits them: ``(rollouts, time, envs, ...)``.
+
+    The carry takes the width-one time axis a single-item timescale carries, so `batch_major` and
+    `per_rollout` reduce it to the ``(sequences, ...)`` a minibatch is cut at.
+    """
     shape = (1, SLOTS, ENVS)
     key = jax.random.key(3)
-    return PPOTrajectory(
+    return RecPPOTrajectory(
         PPOTransition(
             observation=jax.random.normal(key, (*shape, OBS)),
             terminated=jnp.zeros(shape, bool).at[0, SLOTS - 2].set(True),
@@ -78,7 +84,8 @@ def trajectory() -> PPOTrajectory:
             action=jax.random.randint(key, shape, 0, ACTIONS),
             value=jax.random.normal(key, shape),
             log_prob=-jnp.ones(shape),
-        )
+        ),
+        hidden_state=jax.random.normal(key, (1, 1, ENVS, HIDDEN)),
     )
 
 
@@ -201,3 +208,34 @@ def test_an_input_reads_both_boundary_flags_as_one_done() -> None:
 def test_the_recurrent_assembly_picks_a_head_the_way_the_feed_forward_one_does(obs_space, expected) -> None:
     """The Head choice is shared with `ppo.make_head`, so recurrence changes nothing about it."""
     assert type(make_network(obs_space, ACT_SPACE).policy) is expected
+
+
+def test_the_loss_reads_the_carry_the_trajectory_recorded() -> None:
+    """The point of recording it. Two trajectories identical but for the carry their first slot
+    acted under must not produce the same gradient — if they do, the loss is still starting every
+    sequence from a blank memory and the recording is decoration."""
+    assembly = network()
+    rule = rule_for(assembly)
+    state = rule.init(jax.random.key(4))
+    recorded = trajectory()
+    blank = recorded._replace(hidden_state=jnp.zeros_like(recorded.hidden_state))
+
+    from_recorded, _ = jax.jit(rule.update)(state, recorded)
+    from_blank, _ = jax.jit(rule.update)(state, blank)
+
+    same = jax.tree.map(lambda a, b: bool(jnp.allclose(a, b, atol=1e-8)), from_recorded.params, from_blank.params)
+    assert not jax.tree.all(same)
+
+
+def test_a_trajectory_reports_the_carry_its_first_slot_acted_under() -> None:
+    """``per_rollout`` drops the width-one time axis a single-item timescale carries, leaving the
+    ``(sequences, ...)`` a minibatch is cut at."""
+    recorded = trajectory()
+
+    assert recorded.hidden_state.shape == (1, 1, ENVS, HIDDEN)
+    assert recorded.per_rollout().shape == (1, ENVS, HIDDEN)
+
+
+def test_a_feed_forward_trajectory_opens_with_nothing() -> None:
+    """So the same update rule runs both, and `Steps` never sees an per_rollout it cannot cut."""
+    assert PPOTrajectory(trajectory().transitions).per_rollout() == ()

@@ -10,8 +10,8 @@ import optree as tree
 
 from brrrl.types import HIDDEN_STATE, TRANSITIONS, Array, ArrayTree, Params, PRNGKey
 
-type PPOApply = Callable[[Params, Any], tuple[distrax.Distribution, jax.Array]]
-type RecPPOApply = Callable[[Params, ArrayTree, "RecPPOPolicyInput"], tuple[ArrayTree, distrax.Distribution, jax.Array]]
+type PPOApply = Callable[[Params, Any, ArrayTree], tuple[distrax.Distribution, jax.Array]]
+"""What PPO's loss expects: (params, observations, per rollout) -> (policy distribution, value)"""
 
 
 class PPOPolicyOutput(NamedTuple):
@@ -61,10 +61,18 @@ class PPOTransition(NamedTuple):
 class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
 
+    def per_rollout(self) -> ArrayTree:
+        """A feed-forward run has no per-rollout context."""
+        return ()
+
 
 class RecPPOTrajectory(NamedTuple):
     transitions: PPOTransition
     hidden_state: ArrayTree
+
+    def per_rollout(self) -> ArrayTree:
+        """The carry the act behind `transitions[0]` consumed, with the width-one time axis dropped."""
+        return jax.tree.map(lambda leaf: leaf[:, 0], self.hidden_state)
 
 
 class PPOBatch(NamedTuple):

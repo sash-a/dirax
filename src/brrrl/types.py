@@ -59,6 +59,10 @@ class Transition[Obs, O: PolicyOutput](Protocol):
 class Trajectory(Protocol):
     @property
     def transitions(self) -> Transition: ...
+    def per_rollout(self) -> ArrayTree:
+        """The context a loss needs once per rollout rather than once per step.
+        e.g a hidden state in a recurrent algorithm."""
+        ...
 
 
 class Rollout[T: Trajectory](NamedTuple):

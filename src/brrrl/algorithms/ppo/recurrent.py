@@ -108,9 +108,8 @@ def main() -> None:
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space, hidden_size)
-    scanned = cast(RecPPOApply, network.apply)
-    # A learn-time example, because the scan needs a time axis to trace on. The observation takes the
-    # env axis alone and the flags take the whole prefix, as they do in a Trajectory (ADR-0012).
+
+    # A learn-time example, because the scan needs a time axis to trace on
     example_input = RecPPOPolicyInput(
         tree.map(
             lambda leaf: jnp.zeros((1, stepper.num_envs, *jnp.shape(leaf)), jnp.asarray(leaf).dtype),
@@ -123,17 +122,18 @@ def main() -> None:
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
 
-    def learner_forward(params: Params, policy_input: RecPPOPolicyInput) -> tuple[distrax.Distribution, jax.Array]:
-        """A whole sequence at ``(T, sequences, ...)``, which is what `Sequences` cuts a batch into."""
-        carry = network.initialize_carry(policy_input.dones.shape[1:])
-        _, distr, value = scanned(params, carry, policy_input)
+    def learner_forward(
+        params: Params, policy_input: RecPPOPolicyInput, per_rollout: Carry
+    ) -> tuple[distrax.Distribution, jax.Array]:
+        """Learner expects a ``(T, B, ...)`` shaped batch."""
+        _, distr, value = network.apply(params, per_rollout, policy_input)  # type: ignore
         return distr, value
 
     def actor_forward(
         params: Params, policy_input: RecPPOPolicyInput, key: PRNGKey, carry: Carry
     ) -> tuple[PPOPolicyOutput, Carry]:
-        """One step, as the length-one time axis the same network already scans."""
-        carry, distr, value = scanned(params, carry, tree.map(lambda leaf: leaf[None], policy_input))
+        """One step, with a length-one time axis for the recurrent network."""
+        carry, distr, value = network.apply(params, carry, tree.map(lambda leaf: leaf[None], policy_input))  # type: ignore
         action = distr.sample(seed=key)
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action[0], logp[0], value[0]), carry
