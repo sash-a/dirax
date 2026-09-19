@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, cast
+from typing import Any
 
 import distrax
 import echo
@@ -17,10 +17,18 @@ from ray import ObjectRef
 from ray.actor import ActorProxy
 
 from brrrl.acting.env_stepper import LoopedStepper, prefix
-from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.policy import FFPolicy
 from brrrl.acting.roller import Roller
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule
-from brrrl.algorithms.ppo.types import PPOApply, PPOPolicyOutput, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.types import (
+    PPOApply,
+    PPOPolicyInput,
+    PPOPolicyOutput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
 from brrrl.checkpointing.checkpointer import NamedTupleLayout, OrbaxCheckpointer, get_save_path
 from brrrl.distributed.components.actor import Actor
 from brrrl.distributed.components.checkpointer import CheckpointStore, RayCheckpointer
@@ -34,6 +42,7 @@ from brrrl.distributed.placement.preflight import Placed, preflight
 from brrrl.metrics.stdout import StdoutLogger
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
+from brrrl.types import Params
 from brrrl.utils.duration import EveryTicks
 from brrrl.utils.optax import mean_by_axis
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
@@ -49,7 +58,8 @@ class PPONetwork(nn.Module):
         self.torso = MLPTorso([64, 64], activation=jax.nn.relu)
         self.value = ValueHead()
 
-    def __call__(self, obs: Any) -> tuple[distrax.Distribution, jax.Array]:
+    def __call__(self, policy_input: PPOPolicyInput) -> tuple[distrax.Distribution, jax.Array]:
+        obs: Any = policy_input.observation
         masked = isinstance(self.policy, MaskedDiscreteHead)
         emb = self.torso(obs[OBSERVATION] if masked else obs)
         return (self.policy(emb, obs[ACTION_MASK]) if masked else self.policy(emb)), self.value(emb)
@@ -74,10 +84,6 @@ def rescaled(env: gym.Env) -> gym.Env:
     if isinstance(env.action_space, gym.spaces.Box):
         return gym.wrappers.RescaleAction(env, np.float32(-1.0), np.float32(1.0))
     return env
-
-
-def record(obs, term, trunc, reward, policy_output: PPOPolicyOutput):
-    return PPOTransition(obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob)
 
 
 def close(
@@ -135,7 +141,7 @@ def main():
     example_transition = example(rollout_len, width, env.observation_space, act_space)
 
     network = make_network(env.observation_space, act_space)
-    apply_fn = cast(PPOApply, network.apply)
+    apply_fn: PPOApply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
 
     # --- Learner ---
     # TODO(learner):
@@ -146,8 +152,8 @@ def main():
         optax.clip_by_global_norm(MAX_GRAD_NORM),
         optax.adam(schedule, eps=ADAM_EPS),
     )
-    obs_example = env.observation_space.sample()
-    init_params = lambda weights_key: network.init(weights_key, obs_example)
+    example_input = PPOPolicyInput(env.observation_space.sample())
+    init_params = lambda weights_key: network.init(weights_key, example_input)
     rule = PPOUpdateRule(
         apply_fn, init_params, opt, batch_size * num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma
     )
@@ -197,8 +203,8 @@ def main():
     # TODO(actor):
     #  inference server
     #  healthcheck + restarting (actor group)
-    def actor_forward(params, observations, key):
-        distr, value = apply_fn(params, observations)
+    def actor_forward(params: Params, policy_input: PPOPolicyInput, key: PRNGKey) -> PPOPolicyOutput:
+        distr, value = apply_fn(params, policy_input, ())
         action = distr.sample(seed=key)
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action, logp, value)
@@ -209,9 +215,11 @@ def main():
         # TODO: this needs a mirror per actor and needs to ref the mirror
         param_source = RayParamSource(param_store, actor_id)
         traj_accumulator = TrajectoryAccumulator(example_transition)
-        policy = LocalPolicy(jax.jit(actor_forward), param_source, key)
+        policy = FFPolicy(jax.jit(actor_forward), param_source, key)
         stepper = LoopedStepper([make_env for _ in range(num_envs)], wrap=partial(NormalizeReward, gamma=gamma))
-        return Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
+        return Roller(
+            stepper, policy, traj_accumulator, PPOPolicyInput, PPOTransition, PPOTrajectory, rollout_len, seed
+        )
 
     def make_replay_client(i: int) -> echo.TcpClient:
         replay_addr = replay_addrs[i % len(replay_addrs)]

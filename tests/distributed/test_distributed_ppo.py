@@ -13,8 +13,6 @@ same number on the single device the configuration was written on.
 `brrrl.algorithms.ppo.distributed` passes rollouts-per-device times envs, and the last test is why.
 """
 
-from typing import cast
-
 import gymnasium as gym
 import jax
 import jax.numpy as jnp
@@ -29,7 +27,6 @@ from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, make_network
 from brrrl.algorithms.ppo.types import (
     PPOApply,
-    PPOForward,
     PPOPolicyInput,
     PPOTrajectory,
     PPOTransition,
@@ -55,8 +52,7 @@ ACT_SPACE = gym.spaces.Discrete(ACTIONS)
 def network() -> tuple[PPOApply, Params]:
     assembly = make_network(OBS_SPACE, ACT_SPACE)
     example = PPOPolicyInput(OBS_SPACE.sample())
-    forward = cast(PPOForward, assembly.apply)
-    apply_fn: PPOApply = lambda params, policy_input, per_rollout: forward(params, policy_input)
+    apply_fn: PPOApply = lambda params, policy_input, per_rollout: assembly.apply(params, policy_input)  # type: ignore
     return apply_fn, assembly.init(jax.random.key(0), example)
 
 

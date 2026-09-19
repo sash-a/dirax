@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, cast, final
+from typing import Any, final
 
 import distrax
 import flax.linen as nn
@@ -18,7 +18,6 @@ from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, TORSO_LAYERS, PPOU
 from brrrl.algorithms.ppo.types import (
     PPOPolicyOutput,
     PPOTransition,
-    RecPPOApply,
     RecPPOPolicyInput,
     RecPPOTrajectory,
     rec_example,

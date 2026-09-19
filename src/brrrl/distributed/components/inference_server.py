@@ -4,16 +4,16 @@ from typing import ClassVar
 import ray
 from ray.actor import ActorProxy
 
-from brrrl.acting.policy import LocalPolicy, PolicyOutput
+from brrrl.acting.policy import FFPolicy, PolicyInput, PolicyOutput
 from brrrl.distributed.placement.component import Behaviour
 
 
-class InferenceServer[Obs, O: PolicyOutput]:
-    """A `LocalPolicy` behind RPC; refreshes params on its own cadence."""
+class InferenceServer[I: PolicyInput, O: PolicyOutput]:
+    """A `FFPolicy` behind RPC; refreshes params on its own cadence."""
 
     RAY_OPTIONS: ClassVar[Behaviour] = {}
 
-    def __init__(self, policy: LocalPolicy[Obs, O]) -> None:
+    def __init__(self, policy: FFPolicy[I, O]) -> None:
         raise NotImplementedError
 
     @ray.method
@@ -21,17 +21,17 @@ class InferenceServer[Obs, O: PolicyOutput]:
         raise NotImplementedError
 
     @ray.method
-    def act(self, observations: Obs) -> tuple[O, int]:
+    def act(self, observations: I) -> tuple[O, int]:
         """Keys are the server's own: batching across Actors already makes such a run non-reproducible."""
         raise NotImplementedError
 
 
 @dataclass
-class InferenceServerPolicy[Obs, O: PolicyOutput]:
+class InferenceServerPolicy[I: PolicyInput, O: PolicyOutput]:
     """Client half. Coalesces concurrent env requests into one batched call."""
 
-    server: ActorProxy[InferenceServer[Obs, O]]
+    server: ActorProxy[InferenceServer[I, O]]
 
-    def act(self, observation: Obs) -> tuple[O, int]:
+    def act(self, observation: I) -> tuple[O, int]:
         """The Version rides back on a call the client was making anyway, so aligning costs nothing."""
         raise NotImplementedError

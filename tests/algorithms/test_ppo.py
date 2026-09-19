@@ -17,7 +17,7 @@ because its Roller needs a value at act time.
 
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple
 
 import flax.linen as nn
 import gymnasium as gym
@@ -30,7 +30,6 @@ import pytest
 from brrrl.acting.env_stepper import prefix
 from brrrl.algorithms.ppo.ppo import (
     PPOApply,
-    PPOForward,
     PPONetwork,
     PPOUpdateRule,
     explained_variance,
@@ -130,7 +129,7 @@ def initialiser(space: Space, network: nn.Module) -> Callable[[PRNGKey], Params]
 def rule_over(space: Space, network: nn.Module) -> PPOUpdateRule:
     """The rule under test, over whichever Assembly it is handed."""
     return PPOUpdateRule(
-        apply_fn=feedforward_apply(network),
+        apply_fn=lambda params, policy_input, per_rollout: network.apply(params, policy_input),  # type: ignore
         init_params=initialiser(space, network),
         optimizer=optax.adam(1e-3),
         policy_clip_eps=0.2,
@@ -192,17 +191,11 @@ def params(space: Space, network: nn.Module):
     return initialiser(space, network)(jax.random.key(0))
 
 
-def feedforward_apply(network: nn.Module) -> PPOApply:
-    """A feed-forward assembly as the loss calls it: handed a per-sequence context it cannot use."""
-    forward = cast(PPOForward, network.apply)
-    return lambda params, policy_input, per_rollout: forward(params, policy_input)
-
-
 @pytest.fixture(scope="module")
 def apply_fn(network: nn.Module) -> PPOApply:
-    """Flax's ``apply`` returns its mutated variables too when asked, so its type admits a tuple this
-    seam never wants. Narrowed here; real wiring will need the same."""
-    return feedforward_apply(network)
+    """A feed-forward assembly at the seam a loss calls it through: handed the context it opens each
+    sequence with, and dropping it."""
+    return lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
 
 
 @pytest.fixture(scope="module")
@@ -462,7 +455,7 @@ def test_one_network_serves_both_arities_unchanged() -> None:
     and the params are the same size either way — one network shared down the axis, not N of them."""
     alone, team = spaces(1)["discrete"], spaces(TEAM)["discrete"]
     network = make_network(alone.observation_space, alone.action_space)
-    apply = feedforward_apply(network)
+    apply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
 
     one = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(alone, BATCH))))
     many = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(team, BATCH))))

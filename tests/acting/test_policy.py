@@ -5,14 +5,14 @@ Sync point, the key advance and the host boundary are pinned directly.
 """
 
 from dataclasses import dataclass
-from typing import Literal, NamedTuple, overload
+from typing import Any, Literal, NamedTuple, overload
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.policy import FFPolicy
 from brrrl.params.params import ParamStore
 from brrrl.types import Array, Params, PRNGKey, VersionedParams
 
@@ -52,13 +52,13 @@ def seeded(scale: float = 2.0, version: int = 0) -> ParamStore:
     return ParamStore(VersionedParams({"params": {"scale": jnp.float32(scale)}}, version))
 
 
-def acted(policy: LocalPolicy[jax.Array, Output]) -> float:
+def acted(policy: FFPolicy[Any, Output]) -> float:
     return np.asarray(policy.act(OBSERVATION)[0].action).item()
 
 
 def test_a_policy_acts_under_the_seeded_parameters_before_anything_is_published() -> None:
     """The driver seeds the Store, so nothing stalls at start-up waiting for a first publish."""
-    policy = LocalPolicy(scaled, seeded(scale=2.0), jax.random.key(0))
+    policy = FFPolicy(scaled, seeded(scale=2.0), jax.random.key(0))
 
     output, version = policy.act(OBSERVATION)
 
@@ -69,7 +69,7 @@ def test_a_policy_acts_under_the_seeded_parameters_before_anything_is_published(
 def test_an_act_reports_the_version_of_the_parameters_behind_it() -> None:
     """Which is what lets a Roller stamp a Trajectory without ever asking a Policy to align."""
     store = seeded(scale=2.0)
-    policy = LocalPolicy(scaled, store, jax.random.key(0))
+    policy = FFPolicy(scaled, store, jax.random.key(0))
 
     store.publish({"params": {"scale": jnp.float32(10.0)}})
     output, version = policy.act(OBSERVATION)
@@ -82,7 +82,7 @@ def test_a_policy_adopts_new_parameters_as_soon_as_they_land() -> None:
     """When to align is the Policy's own business, and pulling at the act rate is the fastest a
     published update can reach a rollout: the step after it lands, not the Trajectory after."""
     store = seeded(scale=2.0)
-    policy = LocalPolicy(scaled, store, jax.random.key(0))
+    policy = FFPolicy(scaled, store, jax.random.key(0))
 
     before = acted(policy)
     store.publish({"params": {"scale": jnp.float32(10.0)}})
@@ -94,7 +94,7 @@ def test_a_policy_adopts_new_parameters_as_soon_as_they_land() -> None:
 def test_a_sync_point_that_finds_nothing_new_leaves_the_current_parameters_in_place() -> None:
     """A Sync point never blocks, so an Actor keeps producing while it waits for the next publish."""
     source = Scripted([VersionedParams({"params": {"scale": jnp.float32(2.0)}}, 7)])
-    policy = LocalPolicy(scaled, source, jax.random.key(0))
+    policy = FFPolicy(scaled, source, jax.random.key(0))
 
     assert policy.sync() == 7
     assert policy.sync() == 7
@@ -104,7 +104,7 @@ def test_a_sync_point_that_finds_nothing_new_leaves_the_current_parameters_in_pl
 def test_act_returns_host_arrays() -> None:
     """A record function and the accumulator only ever see numpy, and an inference-server client
     could return nothing else."""
-    policy = LocalPolicy(scaled, seeded(), jax.random.key(0))
+    policy = FFPolicy(scaled, seeded(), jax.random.key(0))
 
     action = policy.act(OBSERVATION)[0].action
 
@@ -115,7 +115,7 @@ def test_act_returns_host_arrays() -> None:
 def test_keys_advance_and_never_repeat() -> None:
     """A Roller supplies no key, so a Policy carrying its own is the only thing keeping the stream
     of one act independent of the last."""
-    policy = LocalPolicy(keyed, seeded(), jax.random.key(0))
+    policy = FFPolicy(keyed, seeded(), jax.random.key(0))
 
     actions = [acted(policy) for _ in range(5)]
 
@@ -124,7 +124,7 @@ def test_keys_advance_and_never_repeat() -> None:
 
 def test_two_policies_seeded_differently_sample_differently() -> None:
     """Seeding is per Policy, so two Rollers on one Actor do not sample in lockstep by accident."""
-    left = LocalPolicy(keyed, seeded(), jax.random.key(0))
-    right = LocalPolicy(keyed, seeded(), jax.random.key(1))
+    left = FFPolicy(keyed, seeded(), jax.random.key(0))
+    right = FFPolicy(keyed, seeded(), jax.random.key(1))
 
     assert acted(left) != acted(right)

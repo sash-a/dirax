@@ -15,7 +15,7 @@ built on it.
 
 from contextlib import closing
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 import gymnasium as gym
 import jax
@@ -27,10 +27,10 @@ from gymnasium.vector import AutoresetMode
 from numpy.typing import ArrayLike, NDArray
 
 from brrrl.acting.env_stepper import AsyncStepper, EnvStepper, LoopedStepper, prefix
-from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.policy import FFPolicy
 from brrrl.acting.roller import Roller
 from brrrl.params.params import ParamSource, ParamStore
-from brrrl.types import Array, Params, PRNGKey, VersionedParams
+from brrrl.types import Array, ArrayTree, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4
 LENGTHS = (2, 3)
@@ -127,6 +127,17 @@ class Oracle:
         self.env.close()
 
 
+class Input(NamedTuple):
+    """What a Policy is handed for one step. Feed-forward, so the flags describe the observation
+    without surviving into it — which is the whole of what `of` decides."""
+
+    observation: Any
+
+    @classmethod
+    def of(cls, obs: Any, term: Array, trunc: Array) -> Self:
+        return cls(obs)
+
+
 class Output(NamedTuple):
     action: Array
     value: Array
@@ -135,19 +146,31 @@ class Output(NamedTuple):
 
 class Transition(NamedTuple):
     observation: Any
-    terminated: NDArray[np.bool_]
-    truncated: NDArray[np.bool_]
-    reward: NDArray[np.float32]
+    terminated: Array
+    truncated: Array
+    reward: Array
     action: Array
     value: Array
     log_prob: Array
+
+    @classmethod
+    def record(cls, obs: Any, term: Array, trunc: Array, reward: Array, policy_output: Output) -> Self:
+        return cls(obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob)
 
 
 class Trajectory(NamedTuple):
     transitions: Transition
 
+    def per_rollout(self) -> ArrayTree:
+        """Feed-forward, so each sequence opens with nothing."""
+        return ()
 
-def act_fn(params: Params, observation: Any, key: PRNGKey) -> Output:
+
+type Rolling = Roller[Any, Input, Output, Transition, Trajectory]
+"""The Roller this module builds, named once rather than spelled at every annotation."""
+
+
+def act_fn(params: Params, policy_input: Input, key: PRNGKey) -> Output:
     """A pure function of the observation, so the observation → output → slot mapping is proven.
 
     It says nothing about agents, which is the point. A team's env hands it one observation per agent
@@ -155,19 +178,10 @@ def act_fn(params: Params, observation: Any, key: PRNGKey) -> Output:
     the tuple is unpacking the observation, which ADR-0008 makes the algorithm's job — and there is
     no axis to invent on either side of it.
     """
+    observation = policy_input.observation
     features = jnp.stack(observation, axis=-2) if isinstance(observation, tuple) else jnp.asarray(observation)
     value = params["params"]["scale"] * jnp.sum(features, axis=-1)
     return Output(action=jnp.astype(value, jnp.int32), value=value, log_prob=-value)
-
-
-def record(
-    observation: Any,
-    terminated: NDArray[np.bool_],
-    truncated: NDArray[np.bool_],
-    reward: NDArray[np.float32],
-    output: Output,
-) -> Transition:
-    return Transition(observation, terminated, truncated, reward, output.action, output.value, output.log_prob)
 
 
 def example(num_steps: int, num_envs: int, num_agents: int = 1, leaves: int = 1) -> dict[str, Any]:
@@ -228,14 +242,15 @@ def build(
     source: ParamSource | None = None,
     leaves: int = 1,
     seed: int = 0,
-) -> Roller[Any, Output, Trajectory]:
+) -> Rolling:
     stepper = counters() if stepper is None else stepper
     store = ParamStore(VersionedParams({"params": {"scale": jnp.float32(1.0)}}, version))
     return Roller(
         stepper=stepper,
-        policy=LocalPolicy(act_fn, store if source is None else source, jax.random.key(0)),
+        policy=FFPolicy(act_fn, store if source is None else source, jax.random.key(0)),
         accumulator=TrajectoryAccumulator(example(num_steps, stepper.num_envs, stepper.num_agents, leaves)),
-        record=record,
+        policy_input=Input,
+        transition=Transition,
         trajectory=Trajectory,
         num_steps=num_steps,
         seed=seed,
@@ -243,12 +258,12 @@ def build(
 
 
 @pytest.fixture
-def roller() -> Roller[Any, Output, Trajectory]:
+def roller() -> Rolling:
     return build()
 
 
 def test_a_slot_holds_an_observation_and_the_flags_that_describe_it(
-    roller: Roller[Any, Output, Trajectory],
+    roller: Rolling,
 ) -> None:
     """The Final obs and the flag saying so are never in different slots, which is what makes the
     unusable slot readable off the flags already in it — a shift of zero rather than of one."""
@@ -260,7 +275,7 @@ def test_a_slot_holds_an_observation_and_the_flags_that_describe_it(
 
 
 def test_the_reward_action_and_value_in_a_slot_describe_the_transition_out_of_it(
-    roller: Roller[Any, Output, Trajectory],
+    roller: Rolling,
 ) -> None:
     """The other half of the alignment: the reward is what the slot's action earned, and the value
     is of the slot's own observation — so truncation bootstrapping reads the value beside the flag."""
@@ -274,7 +289,7 @@ def test_the_reward_action_and_value_in_a_slot_describe_the_transition_out_of_it
 
 
 def test_the_final_obs_slot_is_a_real_observation_with_a_real_value(
-    roller: Roller[Any, Output, Trajectory],
+    roller: Rolling,
 ) -> None:
     """ADR-0001: only the action and reward beside it are meaningless. Optimising the slot away, or
     filling its observation with the reset that follows, is what this pins down."""
@@ -287,7 +302,7 @@ def test_the_final_obs_slot_is_a_real_observation_with_a_real_value(
     assert trajectory.transitions.reward[ended, terminal] == 0.0
 
 
-def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Roller[Any, Output, Trajectory]) -> None:
+def test_a_rollout_fills_one_more_slot_than_it_stepped(roller: Rolling) -> None:
     """T+1 in one Timescale, so an Estimator slices a single values array instead of stitching a
     bootstrap onto it. Filled rather than reserved: a loop that stopped at T would leave the last
     slot holding the buffer's zeros, which no observation of this env ever is."""
@@ -308,7 +323,7 @@ def test_the_trailing_slot_carries_the_flags_the_roller_was_already_holding() ->
     assert trajectory.transitions.reward[-1].tolist() == [0.0, 0.0]
 
 
-def test_a_rollout_carries_the_version_its_acts_ran_under(roller: Roller[Any, Output, Trajectory]) -> None:
+def test_a_rollout_carries_the_version_its_acts_ran_under(roller: Rolling) -> None:
     """It rides beside the payload rather than inside it, so a Trainer can log staleness across a
     batch without the stamp ever reaching a device."""
     (_, version), _ = roller.rollout()
@@ -325,16 +340,36 @@ def test_a_rollout_that_spanned_no_publish_carries_that_one_version() -> None:
 
 def test_a_rollout_that_spanned_a_publish_carries_the_mean_of_the_versions_it_acted_under() -> None:
     """A Policy pulls at its own rate, so a rollout can straddle a publish. The mean is what makes
-    that a number a Trainer can subtract from its own Version and read as staleness."""
-    acted_under = [4, 4, 6, 6, 6]
+    that a number a Trainer can subtract from its own Version and read as staleness.
 
-    (_, version), _ = build(source=Stepping([0, *acted_under])).rollout()
+    One act per stepped transition, so the mean is over `NUM_STEPS` of them rather than over every
+    act the rollout made. The last act is the one that fills the trailing slot here and slot zero of
+    the rollout after, and it is stamped there — counting it twice is what this leaves out.
+    """
+    acted_under = [4, 4, 6, 6]
+    spilling_into_the_next_rollout = 6
 
-    assert version.tolist() == [pytest.approx(5.2)]
+    source = Stepping([0, *acted_under, spilling_into_the_next_rollout])
+    (_, version), _ = build(source=source).rollout()
+
+    assert version.tolist() == [pytest.approx(5.0)]
+
+
+def test_the_act_at_a_rollout_boundary_is_stamped_on_the_rollout_it_stepped() -> None:
+    """One act fills the trailing slot of one rollout and slot zero of the next, so a stamp that
+    claimed it at both ends would count the same act twice over a run and read low on staleness."""
+    boundary = 99
+    roller = build(source=Stepping([0, 1, 1, 1, 1, boundary]))
+
+    (_, first), _ = roller.rollout()
+    (_, second), _ = roller.rollout()
+
+    assert first.tolist() == [1.0], "the boundary act was stamped on the rollout before it stepped"
+    assert second.tolist() == [pytest.approx(boundary)]
 
 
 def test_a_roller_reports_how_many_transitions_one_rollout_produces(
-    roller: Roller[Any, Output, Trajectory],
+    roller: Rolling,
 ) -> None:
     """The Step axis advances by a count the Roller owns. The trailing slot is never stepped, so it
     is not one of them."""
@@ -349,7 +384,7 @@ def test_a_team_is_not_a_multiplier_on_the_transition_count() -> None:
         assert build(stepper=stepper, leaves=AGENTS).num_transitions == NUM_STEPS * NUM_ENVS
 
 
-def test_only_completed_episodes_are_reported(roller: Roller[Any, Output, Trajectory]) -> None:
+def test_only_completed_episodes_are_reported(roller: Rolling) -> None:
     """One env ran two steps and returned 11+12, the other three and returned 11+12+13."""
     _, metrics = roller.rollout()
 
@@ -357,11 +392,13 @@ def test_only_completed_episodes_are_reported(roller: Roller[Any, Output, Trajec
     assert np.asarray(metrics["episode_length"]).tolist() == [2, 3]
 
 
-def test_a_rollout_in_which_nothing_finished_reports_nothing() -> None:
-    """Nothing rather than a zero or a nan, which would drag a windowed mean toward it."""
+def test_a_rollout_in_which_nothing_finished_reports_no_episode() -> None:
+    """Nothing rather than a zero or a nan, which would drag a windowed mean toward it. The timings
+    beside them are the Roller's own and are reported every rollout, finished episode or not."""
     _, metrics = build(num_steps=1).rollout()
 
-    assert metrics == {}
+    assert "episode_return" not in metrics
+    assert "episode_length" not in metrics
 
 
 @pytest.mark.parametrize(

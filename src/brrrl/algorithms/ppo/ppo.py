@@ -22,7 +22,6 @@ from brrrl.acting.roller import Roller
 from brrrl.algorithms.ppo.types import (
     PPOApply,
     PPOBatch,
-    PPOForward,
     PPOPolicyInput,
     PPOPolicyOutput,
     PPOTrajectory,
