@@ -1,7 +1,7 @@
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, cast
+from typing import Any, cast, final
 
 import chex
 import distrax
@@ -17,18 +17,21 @@ from gymnasium.wrappers.vector import NormalizeReward
 from jax import tree
 
 from brrrl.acting.env_stepper import AsyncStepper, prefix
-from brrrl.acting.policy import LocalPolicy
+from brrrl.acting.policy import FFPolicy
 from brrrl.acting.roller import Roller
-from brrrl.algorithms.estimators import generalised_advantages
 from brrrl.algorithms.ppo.types import (
     PPOApply,
     PPOBatch,
+    PPOForward,
+    PPOPolicyInput,
     PPOPolicyOutput,
     PPOTrajectory,
     PPOTransition,
     PPOUpdateState,
     example,
 )
+from brrrl.learning.estimators import generalised_advantages
+from brrrl.learning.minibatcher import Minibatcher, Steps
 from brrrl.metrics import default_logger
 from brrrl.metrics.logger import MultiLogger
 from brrrl.metrics.stdout import StdoutLogger
@@ -36,7 +39,7 @@ from brrrl.networks.distribution import normalised_entropy
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 from brrrl.networks.torso import MLPTorso
 from brrrl.params.params import ParamStore
-from brrrl.types import Array, Metrics, Params, PRNGKey, VersionedParams
+from brrrl.types import Array, ArrayTree, Metrics, Params, PolicyInput, PRNGKey, VersionedParams
 from brrrl.utils.duration import EveryTicks
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
 from brrrl.wrappers.agents import one_agent
@@ -44,8 +47,9 @@ from brrrl.wrappers.agents import one_agent
 EPS = 1e-8
 MAX_GRAD_NORM = 0.5
 ADAM_EPS = 1e-5
+TORSO_LAYERS = (64, 64)
 
-type EpochCarry = tuple[PPOUpdateState, PPOBatch]
+type EpochCarry = tuple[PPOUpdateState, PPOBatch, ArrayTree]
 type LossInfo = dict[str, jax.Array]
 
 
@@ -74,6 +78,8 @@ class PPOUpdateRule:
     rollout_length: int
     num_epochs: int = 2
     num_minibatches: int = 4
+    policy_input: type[PolicyInput] = PPOPolicyInput
+    minibatcher: Minibatcher = field(default_factory=Steps)
     policy_clip_eps: float = 0.2
     value_clip_eps: float = 0.2
     ent_coef: float = 0.01
@@ -92,7 +98,7 @@ class PPOUpdateRule:
             and self.rollout_length > 0
             and self.num_epochs > 0
             and self.num_minibatches > 0
-            and (self.batch_size * self.rollout_length) % self.num_minibatches == 0
+            and self.minibatcher.validate(self.batch_size, self.rollout_length, self.num_minibatches)
             and self.policy_clip_eps > 0
             and self.value_clip_eps > 0
             and self.ent_coef >= 0
@@ -115,7 +121,8 @@ class PPOUpdateRule:
         )
         value_targets = advantages + trajectory.transitions.value[:, :-1]
         batch = PPOBatch(tree.map(lambda x: x[:, :-1], trajectory.transitions), advantages, value_targets)
-        (state, _), loss_infos = jax.lax.scan(self.epoch, (state, batch), None, self.num_epochs)
+        per_rollout = trajectory.per_rollout()  # The per rollout data like hidden state, stored next to the batch
+        (state, _, _), loss_infos = jax.lax.scan(self.epoch, (state, batch, per_rollout), None, self.num_epochs)
         mask = ~(batch.transitions.terminated | batch.transitions.truncated)
         return state, tree.map(jnp.mean, loss_infos) | self.batch_metrics(batch, mask) | self.drift_metrics(loss_infos)
 
@@ -141,38 +148,28 @@ class PPOUpdateRule:
             "param_norm": optax.tree.norm(state.params),
         }
 
-    def shuffle_and_minibatch(self, key: PRNGKey, batch: PPOBatch) -> PPOBatch:
-        """One flat pool of steps, permuted and cut into minibatches along a new leading axis."""
-        flat_bs = self.batch_size * self.rollout_length
-        mb_size = flat_bs // self.num_minibatches
-        perm = jax.random.permutation(key, flat_bs)
-        return tree.map(
-            lambda leaf: (
-                leaf.reshape(flat_bs, *leaf.shape[2:])  # flatten T, B
-                .take(perm, axis=0)  # shuffle
-                .reshape(self.num_minibatches, mb_size, *leaf.shape[2:])  # batch into minibatches
-            ),
-            batch,
-        )
-
     def epoch(self, carry: EpochCarry, _: None) -> tuple[EpochCarry, LossInfo]:
-        state, batch = carry
+        state, batch, per_rollout = carry
         key, shuffle_key = jax.random.split(state.key)
-        minibatches = self.shuffle_and_minibatch(shuffle_key, batch)
+        minibatches = self.minibatcher.cut(shuffle_key, batch, per_rollout, self.num_minibatches)
         state, loss_info = jax.lax.scan(self.minibatch, state._replace(key=key), minibatches)
-        return (state, batch), loss_info
+        return (state, batch, per_rollout), loss_info
 
-    def minibatch(self, state: PPOUpdateState, batch: PPOBatch) -> tuple[PPOUpdateState, LossInfo]:
-        grads, loss_info = jax.grad(self.loss, has_aux=True)(state.params, batch)
+    def minibatch(
+        self, state: PPOUpdateState, minibatch: tuple[PPOBatch, ArrayTree]
+    ) -> tuple[PPOUpdateState, LossInfo]:
+        batch, per_rollout = minibatch
+        grads, loss_info = jax.grad(self.loss, has_aux=True)(state.params, batch, per_rollout)
         updates, opt_state = self.optimizer.update(grads, state.opt_state, state.params)
         params = cast(Params, optax.apply_updates(state.params, updates))
         metrics = loss_info | self.minibatch_metrics(state, grads, updates)
         return state._replace(params=params, opt_state=opt_state), metrics
 
-    def loss(self, params: Params, batch: PPOBatch) -> tuple[jax.Array, LossInfo]:
+    def loss(self, params: Params, batch: PPOBatch, per_rollout: ArrayTree) -> tuple[jax.Array, LossInfo]:
         transitions = batch.transitions
         mask = ~(transitions.terminated | transitions.truncated)
-        distribution, value = self.apply_fn(params, transitions.observation)
+        policy_input = self.policy_input.of(transitions.observation, transitions.terminated, transitions.truncated)
+        distribution, value = self.apply_fn(params, policy_input, per_rollout)
 
         advantages = normalise(batch.advantages, mask)
         log_ratio = distribution.log_prob(transitions.action) - transitions.log_prob
@@ -203,14 +200,16 @@ class PPOUpdateRule:
         return total, metrics
 
 
+@final
 class PPONetwork(nn.Module):
     policy: nn.Module
 
     def setup(self):
-        self.torso = MLPTorso([64, 64], activation=jax.nn.relu)
+        self.torso = MLPTorso(TORSO_LAYERS, activation=jax.nn.relu)
         self.value = ValueHead()
 
-    def __call__(self, obs: Any) -> tuple[distrax.Distribution, jax.Array]:
+    def __call__(self, policy_input: PPOPolicyInput) -> tuple[distrax.Distribution, jax.Array]:
+        obs: Any = policy_input.observation
         masked = isinstance(self.policy, MaskedDiscreteHead)
         emb = self.torso(obs[OBSERVATION] if masked else obs)
         return (self.policy(emb, obs[ACTION_MASK]) if masked else self.policy(emb)), self.value(emb)
@@ -263,40 +262,47 @@ def main() -> None:
     traj_accumulator = TrajectoryAccumulator(example_transition)
 
     network = make_network(env.observation_space, act_space)
-    apply_fn = cast(PPOApply, network.apply)
-    obs_example = env.observation_space.sample()
-    init_params = lambda weights_key: network.init(weights_key, obs_example)
+    # A feed-forward assembly reads one input and opens with nothing, so it drops the context.
+    apply_fn: PPOApply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
+    example_input = PPOPolicyInput(env.observation_space.sample())
+    init_params = lambda weights_key: network.init(weights_key, example_input)
     # Annealed to zero across the run
     schedule = optax.linear_schedule(learning_rate, 0.0, num_updates * num_epochs * num_minibatches)
     opt = optax.chain(optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(schedule, eps=ADAM_EPS))
 
-    def actor_forward(params, observations, key):
-        distr, value = apply_fn(params, observations)
+    def actor_forward(params: Params, policy_input: PPOPolicyInput, key: PRNGKey) -> PPOPolicyOutput:
+        distr, value = apply_fn(params, policy_input, ())
         action = distr.sample(seed=key)
         logp = jnp.asarray(distr.log_prob(action))
         return PPOPolicyOutput(action, logp, value)
 
-    def record(obs, term, trunc, reward, policy_output: PPOPolicyOutput):
-        return PPOTransition(
-            obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob
-        )
-
-    updater = PPOUpdateRule(apply_fn, init_params, opt, num_envs, rollout_len, num_epochs, num_minibatches, gamma=gamma)
+    updater = PPOUpdateRule(
+        apply_fn,
+        init_params,
+        opt,
+        num_envs,
+        rollout_len,
+        num_epochs,
+        num_minibatches,
+        PPOPolicyInput,
+        Steps(),
+        gamma=gamma,
+    )
     if not updater.isvalid():
         raise ValueError("Invalid config option selected for PPOUpdateRule")
     update_state = updater.init(init_key)
     update_fn = jax.jit(updater.update)
 
     param_source = ParamStore(VersionedParams(update_state.params, 0))
-    policy = LocalPolicy(jax.jit(actor_forward), param_source, policy_key)
-    roller = Roller(stepper, policy, traj_accumulator, record, PPOTrajectory, rollout_len, seed)
+    policy = FFPolicy(jax.jit(actor_forward), param_source, policy_key)
+    roller = Roller(stepper, policy, traj_accumulator, PPOPolicyInput, PPOTransition, PPOTrajectory, rollout_len, seed)
 
     actor_recorder, learner_recorder = default_logger(
         MultiLogger([StdoutLogger()]),  # WandbLogger("brrrl", tags=["PPO", env_name]),
         every=EveryTicks(20),
     )
 
-    for i in range(num_updates):
+    for _ in range(num_updates):
         rollout, act_metrics = roller.rollout()
         actor_recorder.record(act_metrics, num_transitions=roller.num_transitions)
         # One Roller, so the rollout axis a stacked batch of them would bring is width one here.

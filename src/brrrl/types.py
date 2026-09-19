@@ -1,5 +1,5 @@
 from collections.abc import Callable, Mapping
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, Self
 
 import jax
 import numpy as np
@@ -10,7 +10,7 @@ type Params = VariableDict
 type PRNGKey = jax.Array
 type Metrics = Mapping[str, ArrayLike]
 type NestedMetrics = Mapping[str, Any]
-type ArrayTree = NDArray | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
+type ArrayTree = Array | Mapping[str, ArrayTree] | tuple[ArrayTree, ...]
 type StepResult[Obs] = tuple[Obs, NDArray[np.floating], NDArray[np.bool_], NDArray[np.bool_], dict[str, Any]]
 type Array = NDArray | jax.Array
 type UpdateFn[S: UpdateState, T: Trajectory] = Callable[[S, T], tuple[S, Metrics]]
@@ -18,27 +18,51 @@ type UpdateFn[S: UpdateState, T: Trajectory] = Callable[[S, T], tuple[S, Metrics
 
 TRANSITIONS = "transitions"
 """A Trajectory's timescale name. It is its field name too, so the accumulator rebuilds it."""
+HIDDEN_STATE = "hidden_state"
 
 
-class Transition(Protocol):
-    """One slot. The flags describe the observation beside them; the rest describe the step out of it."""
-
-    @property
-    def observation(self) -> ArrayTree: ...
-    @property
-    def terminated(self) -> NDArray[np.bool_]: ...
-    @property
-    def truncated(self) -> NDArray[np.bool_]: ...
-    @property
-    def reward(self) -> NDArray[np.floating]: ...
+class PolicyOutput(Protocol):
     @property
     def action(self) -> Array: ...
 
 
-# TODO: do we need a Trajectory anymore? Might be useful if we create things at different timescales
+class PolicyInput(Protocol):
+    """What a Policy is handed for one step."""
+
+    @property
+    def observation(self) -> ArrayTree: ...
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        """One input from an observation and the flags that describe it."""
+        ...
+
+
+class Transition[Obs, O: PolicyOutput](Protocol):
+    """One slot in a buffer. Observation, terminated and truncated are from step t, reward and action are from step t+1."""
+
+    @property
+    def observation(self) -> Obs: ...
+    @property
+    def terminated(self) -> Array: ...
+    @property
+    def truncated(self) -> Array: ...
+    @property
+    def reward(self) -> Array: ...
+    @property
+    def action(self) -> Array: ...
+    @classmethod
+    def record(cls, obs: Obs, term: Array, trunc: Array, reward: Array, policy_output: O) -> Self:
+        """One slot from one step, built from what a stepper reported and what a Policy returned."""
+        ...
+
+
 class Trajectory(Protocol):
     @property
     def transitions(self) -> Transition: ...
+    def per_rollout(self) -> ArrayTree:
+        """The context a loss needs once per rollout rather than once per step.
+        e.g a hidden state in a recurrent algorithm."""
+        ...
 
 
 class Rollout[T: Trajectory](NamedTuple):

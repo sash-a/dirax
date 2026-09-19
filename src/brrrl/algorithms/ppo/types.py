@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 import distrax
 import gymnasium as gym
@@ -7,11 +7,11 @@ import jax
 import numpy as np
 import optax
 import optree as tree
-from numpy.typing import NDArray
 
-from brrrl.types import TRANSITIONS, Array, ArrayTree, Params, PRNGKey
+from brrrl.types import HIDDEN_STATE, TRANSITIONS, Array, ArrayTree, Params, PRNGKey
 
-type PPOApply = Callable[[Params, ArrayTree], tuple[distrax.Distribution, jax.Array]]
+type PPOApply = Callable[[Params, Any, ArrayTree], tuple[distrax.Distribution, jax.Array]]
+"""What PPO's loss expects: (params, observations, per rollout) -> (policy distribution, value)"""
 
 
 class PPOPolicyOutput(NamedTuple):
@@ -20,18 +20,59 @@ class PPOPolicyOutput(NamedTuple):
     value: Array
 
 
+class PPOPolicyInput(NamedTuple):
+    observation: ArrayTree
+
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        return cls(obs)
+
+
+class RecPPOPolicyInput(NamedTuple):
+    observation: ArrayTree
+    dones: Array
+
+    @classmethod
+    def of(cls, obs: ArrayTree, term: Array, trunc: Array) -> Self:
+        return cls(obs, term | trunc)
+
+
+class RecPPOPolicyOutput(NamedTuple):
+    action: Array
+    log_prob: Array
+    value: Array
+    hstate: ArrayTree
+
+
 class PPOTransition(NamedTuple):
     observation: ArrayTree
-    terminated: NDArray[np.bool_]
-    truncated: NDArray[np.bool_]
-    reward: NDArray[np.floating]
+    terminated: Array
+    truncated: Array
+    reward: Array
     action: Array
     value: Array
     log_prob: Array
 
+    @classmethod
+    def record(cls, obs: ArrayTree, term: Array, trunc: Array, reward: Array, policy_output: PPOPolicyOutput) -> Self:
+        return cls(obs, term, trunc, reward, policy_output.action, policy_output.value, policy_output.log_prob)
+
 
 class PPOTrajectory(NamedTuple):
     transitions: PPOTransition
+
+    def per_rollout(self) -> ArrayTree:
+        """A feed-forward run has no per-rollout context."""
+        return ()
+
+
+class RecPPOTrajectory(NamedTuple):
+    transitions: PPOTransition
+    hidden_state: ArrayTree
+
+    def per_rollout(self) -> ArrayTree:
+        """The carry the act behind `transitions[0]` consumed, with the width-one time axis dropped."""
+        return jax.tree.map(lambda leaf: leaf[:, 0], self.hidden_state)
 
 
 class PPOBatch(NamedTuple):
@@ -59,11 +100,6 @@ def example(rollout_length: int, prefix: tuple[int, ...], obs_space: gym.Space, 
         obs_space: One env's observation space, not the batched one.
         act_space: One agent's action space. `brrrl.wrappers.agents.one_agent` of what the env
             declares.
-
-    The observation is the one field that does not take the whole prefix. It keeps whatever shape
-    its env gave it, so an env whose agents each observe for themselves already carries the agent
-    axis there and one whose agents share a view does not — nothing in the stepper chain touches an
-    observation, and unpacking it is the algorithm's job (ADR-0008).
     """
     traj_len = rollout_length + 1  # because there is a final bootstrap step
     num_envs = prefix[0]
@@ -84,3 +120,31 @@ def example(rollout_length: int, prefix: tuple[int, ...], obs_space: gym.Space, 
     )
 
     return {TRANSITIONS: trajectory}
+
+
+def rec_example(
+    rollout_length: int,
+    hidden_size: int,
+    prefix: tuple[int, ...],
+    obs_space: gym.Space,
+    act_space: gym.Space,
+) -> dict[str, Any]:
+    """Makes a recurrent example for echo.
+
+    Args:
+       rollout_length: Transitions per rollout. One slot more than this is filled, for the trailing
+           bootstrap step.
+       hidden_size: size of the flat hidden state. This function does not support non-flat array hidden states.
+       prefix: The leading shape every field a stepper reports carries — ``(E, A)`` for an env with
+           a team acting in it, and ``(E,)`` for one with a single agent, which has no agent axis at
+           all. `brrrl.acting.env_stepper.prefix` composes it. The env axis leads either way, so the
+           observation takes its first entry and nothing else.
+       obs_space: One env's observation space, not the batched one.
+       act_space: One agent's action space. `brrrl.wrappers.agents.one_agent` of what the env
+           declares.
+    """
+    transition = example(rollout_length, prefix, obs_space, act_space)
+    # The leading 1 is what makes this a single-item timescale to the accumulator, and what lands
+    # in the time slot when `batch_major` rearranges it.
+    hidden = {HIDDEN_STATE: np.empty((1, *prefix, hidden_size), np.float32)}
+    return transition | hidden

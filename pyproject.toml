@@ -35,6 +35,7 @@ cuda = ["jax[cuda13]>=0.10.1"]
 
 [project.scripts]
 ppo = "brrrl.algorithms.ppo.ppo:main"
+ppo-rec = "brrrl.algorithms.ppo.recurrent:main"
 ppo-dist = "brrrl.algorithms.ppo.distributed:main"
 
 # A group, not an extra: the toolchain is for working on brrrl, not for installing it, and groups

@@ -28,9 +28,24 @@ import optax
 import pytest
 
 from brrrl.acting.env_stepper import prefix
-from brrrl.algorithms.estimators import generalised_advantages
-from brrrl.algorithms.ppo.ppo import PPOApply, PPONetwork, PPOUpdateRule, explained_variance, make_network, normalise
-from brrrl.algorithms.ppo.types import PPOBatch, PPOTrajectory, PPOTransition, PPOUpdateState, example
+from brrrl.algorithms.ppo.ppo import (
+    PPOApply,
+    PPOForward,
+    PPONetwork,
+    PPOUpdateRule,
+    explained_variance,
+    make_network,
+    normalise,
+)
+from brrrl.algorithms.ppo.types import (
+    PPOBatch,
+    PPOPolicyInput,
+    PPOTrajectory,
+    PPOTransition,
+    PPOUpdateState,
+    example,
+)
+from brrrl.learning.estimators import generalised_advantages
 from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
 from brrrl.types import TRANSITIONS, Array, Params, PRNGKey
 from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
@@ -109,13 +124,13 @@ EVERY = {
 def initialiser(space: Space, network: nn.Module) -> Callable[[PRNGKey], Params]:
     """What a rule takes in place of an obs space: an Assembly paired with an example to trace it
     on. A network is shape-polymorphic, so neither half means `init` without the other."""
-    return lambda key: network.init(key, space.observation(jnp.zeros(shaped(space, 1))))
+    return lambda key: network.init(key, PPOPolicyInput(space.observation(jnp.zeros(shaped(space, 1)))))
 
 
 def rule_over(space: Space, network: nn.Module) -> PPOUpdateRule:
     """The rule under test, over whichever Assembly it is handed."""
     return PPOUpdateRule(
-        apply_fn=cast(PPOApply, network.apply),
+        apply_fn=feedforward_apply(network),
         init_params=initialiser(space, network),
         optimizer=optax.adam(1e-3),
         policy_clip_eps=0.2,
@@ -139,7 +154,7 @@ def acted(space: Space, network: nn.Module, params) -> PPOTrajectory:
     """
     key = jax.random.key(1)
     observation = space.observation(jax.random.normal(key, shaped(space, BATCH, SLOTS)))
-    distribution, value = network.apply(params, observation)
+    distribution, value = network.apply(params, PPOPolicyInput(observation))
     action = distribution.sample(seed=key)
 
     width = (BATCH, SLOTS, *space.agent_axis)
@@ -177,11 +192,17 @@ def params(space: Space, network: nn.Module):
     return initialiser(space, network)(jax.random.key(0))
 
 
+def feedforward_apply(network: nn.Module) -> PPOApply:
+    """A feed-forward assembly as the loss calls it: handed a per-sequence context it cannot use."""
+    forward = cast(PPOForward, network.apply)
+    return lambda params, policy_input, per_rollout: forward(params, policy_input)
+
+
 @pytest.fixture(scope="module")
 def apply_fn(network: nn.Module) -> PPOApply:
     """Flax's ``apply`` returns its mutated variables too when asked, so its type admits a tuple this
     seam never wants. Narrowed here; real wiring will need the same."""
-    return cast(PPOApply, network.apply)
+    return feedforward_apply(network)
 
 
 @pytest.fixture(scope="module")
@@ -212,7 +233,7 @@ def state(rule: PPOUpdateRule, params) -> PPOUpdateState:
 def test_the_ratio_is_one_at_the_behaviour_policy(rule: PPOUpdateRule, state, trajectory) -> None:
     """So the surrogate is exactly the mean advantage, which normalisation has already zeroed."""
     batch = PPOBatch(*from_trajectory(rule, trajectory))
-    _, metrics = rule.loss(state.params, batch)
+    _, metrics = rule.loss(state.params, batch, ())
 
     assert np.isclose(metrics["approx_kl"], 0.0, atol=1e-6)
     assert np.isclose(metrics["clip_fraction"], 0.0, atol=1e-6)
@@ -335,8 +356,8 @@ def test_each_clip_epsilon_bounds_only_its_own_term(rule: PPOUpdateRule, state, 
     moved, _ = rule.update(state, stacked(trajectory))
     batch = PPOBatch(*from_trajectory(rule, trajectory))
 
-    _, tight = replace(rule, value_clip_eps=1e-8).loss(moved.params, batch)
-    _, loose = replace(rule, value_clip_eps=1e8).loss(moved.params, batch)
+    _, tight = replace(rule, value_clip_eps=1e-8).loss(moved.params, batch, ())
+    _, loose = replace(rule, value_clip_eps=1e8).loss(moved.params, batch, ())
 
     assert np.isclose(tight["value_clip_fraction"], 1.0)
     assert np.isclose(loose["value_clip_fraction"], 0.0)
@@ -346,7 +367,7 @@ def test_each_clip_epsilon_bounds_only_its_own_term(rule: PPOUpdateRule, state, 
 def test_the_value_clip_cannot_bind_at_the_behaviour_critic(rule: PPOUpdateRule, state, trajectory) -> None:
     """These values are the ones the critic itself produced, so there is nothing for it to drift from."""
     batch = PPOBatch(*from_trajectory(rule, trajectory))
-    _, metrics = rule.loss(state.params, batch)
+    _, metrics = rule.loss(state.params, batch, ())
 
     assert np.isclose(metrics["value_clip_fraction"], 0.0)
 
@@ -366,7 +387,7 @@ def test_shuffling_loses_no_step_and_duplicates_none(rule: PPOUpdateRule, trajec
     labelled = jnp.arange(BATCH * ROLLOUT, dtype=jnp.float32).reshape(BATCH, ROLLOUT)
     batch = PPOBatch(jax.tree.map(lambda leaf: leaf[:, :-1], trajectory.transitions), labelled, labelled)
 
-    minibatches = rule.shuffle_and_minibatch(jax.random.key(4), batch)
+    minibatches, _ = rule.minibatcher.cut(jax.random.key(4), batch, (), rule.num_minibatches)
 
     minibatch_size = BATCH * ROLLOUT // MINIBATCHES
 
@@ -385,7 +406,7 @@ def test_shuffling_keeps_each_step_whole(rule: PPOUpdateRule, trajectory) -> Non
     transitions = jax.tree.map(lambda leaf: leaf[:, :-1], trajectory.transitions)
     batch = PPOBatch(transitions, transitions.value, transitions.value)
 
-    minibatches = rule.shuffle_and_minibatch(jax.random.key(5), batch)
+    minibatches, _ = rule.minibatcher.cut(jax.random.key(5), batch, (), rule.num_minibatches)
 
     assert np.allclose(minibatches.advantages, minibatches.transitions.value)
 
@@ -427,7 +448,8 @@ def test_a_value_carries_whatever_axis_its_observation_did(space: Space, network
     leading axes, so a team's observation comes back as a value per agent and a single agent's as one
     value — which is the shape the loss needs either way, because it compares a value against a
     reward slot for slot and the stepper reported both the same way."""
-    distribution, value = network.apply(params, space.observation(jnp.zeros(shaped(space, BATCH, SLOTS))))
+    policy_input = PPOPolicyInput(space.observation(jnp.zeros(shaped(space, BATCH, SLOTS))))
+    distribution, value = network.apply(params, policy_input)
     action = distribution.sample(seed=jax.random.key(6))
 
     assert value.shape == (BATCH, SLOTS, *space.agent_axis)
@@ -440,14 +462,14 @@ def test_one_network_serves_both_arities_unchanged() -> None:
     and the params are the same size either way — one network shared down the axis, not N of them."""
     alone, team = spaces(1)["discrete"], spaces(TEAM)["discrete"]
     network = make_network(alone.observation_space, alone.action_space)
-    apply = cast(PPOApply, network.apply)
+    apply = feedforward_apply(network)
 
-    one = network.init(jax.random.key(0), jnp.zeros(shaped(alone, BATCH)))
-    many = network.init(jax.random.key(0), jnp.zeros(shaped(team, BATCH)))
+    one = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(alone, BATCH))))
+    many = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(team, BATCH))))
 
     assert jax.tree.all(jax.tree.map(lambda a, b: a.shape == b.shape, one, many))
-    _, single_value = apply(one, np.zeros(shaped(alone, BATCH), np.float32))
-    _, team_value = apply(many, np.zeros(shaped(team, BATCH), np.float32))
+    _, single_value = apply(one, PPOPolicyInput(np.zeros(shaped(alone, BATCH), np.float32)), ())
+    _, team_value = apply(many, PPOPolicyInput(np.zeros(shaped(team, BATCH), np.float32)), ())
     assert single_value.shape == (BATCH,)
     assert team_value.shape == (BATCH, TEAM)
 
@@ -550,7 +572,7 @@ def fresh_loss(space: Space) -> tuple[jax.Array, dict]:
     network = make_network(space.observation_space, space.action_space)
     params = initialiser(space, network)(jax.random.key(0))
     rule = rule_over(space, network)
-    return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(space, network, params))))
+    return rule.loss(params, PPOBatch(*from_trajectory(rule, acted(space, network, params))), ())
 
 
 def from_trajectory(rule: PPOUpdateRule, trajectory: PPOTrajectory):

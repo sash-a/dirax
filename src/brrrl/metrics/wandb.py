@@ -1,9 +1,9 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-import wandb
 from etils import epath
 
+import wandb
 from brrrl.metrics.scalar import scalars
 from brrrl.types import Metrics
 
