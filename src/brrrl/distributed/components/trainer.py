@@ -1,5 +1,5 @@
 import time
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 import numpy as np
 import ray
@@ -12,6 +12,21 @@ from brrrl.metrics.collector import MetricRecorder
 from brrrl.metrics.timer import AggregatedElapsed, Timer
 from brrrl.params.params import ParamSink
 from brrrl.types import PRNGKey, Trajectory, UpdateState
+
+
+class Stopper(Protocol):
+    """Asked before every update whether this run should end where it is."""
+
+    def should_stop(self) -> bool:
+        """True to end the run after the updates already done, saving and closing as usual."""
+        ...
+
+
+class NeverStop:
+    """The default stopper, never stops a run, allows it to run until its update budget is completed."""
+
+    def should_stop(self) -> bool:
+        return False
 
 
 class Trainer[S: UpdateState, T: Trajectory]:
@@ -29,6 +44,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
         param_sink: ParamSink,
         metric_recorder: MetricRecorder,
         checkpointer: RayCheckpointer[S],
+        stopper: Stopper | None = None,
     ):
         mesh, model_sharding, data_sharding = rule.shardings()
         self.num_updates = num_updates
@@ -47,9 +63,15 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self.replay_servers = replay.servers(list(data_sharding.mesh.devices.flat))
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
 
+        self.stopper = stopper or NeverStop()
+
     @ray.method
     def run(self) -> None:
         for i in range(self.num_updates):
+            # Before the update rather than after, so a run told to stop does not pay for one more.
+            if self.stopper.should_stop():
+                break
+
             start_time = time.monotonic()
             with self.timer("traj_wait_time"):
                 trajectory, roller_version, replay_metrics = next(self.dataset)
@@ -76,7 +98,7 @@ class Trainer[S: UpdateState, T: Trajectory]:
 
         final_timestep = self.num_updates * self.timesteps_per_update
         self.checkpointer.save(
-            self.num_updates + 1,
+            self.num_updates,
             self.state,
             None,
             metadata={"timestep": final_timestep, "update": self.num_updates + 1},
