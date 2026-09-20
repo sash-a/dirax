@@ -455,7 +455,7 @@ def test_one_network_serves_both_arities_unchanged() -> None:
     and the params are the same size either way — one network shared down the axis, not N of them."""
     alone, team = spaces(1)["discrete"], spaces(TEAM)["discrete"]
     network = make_network(alone.observation_space, alone.action_space)
-    apply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
+    apply: PPOApply = lambda params, policy_input, per_rollout: network.apply(params, policy_input)  # type: ignore
 
     one = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(alone, BATCH))))
     many = network.init(jax.random.key(0), PPOPolicyInput(jnp.zeros(shaped(team, BATCH))))

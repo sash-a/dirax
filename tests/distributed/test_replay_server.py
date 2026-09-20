@@ -22,7 +22,7 @@ PPO-shaped.
 from collections.abc import Iterator
 from contextlib import closing
 from itertools import product
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 import jax
 import numpy as np
@@ -34,7 +34,7 @@ from numpy.typing import NDArray
 
 from brrrl.algorithms.ppo.ppo import batch_major
 from brrrl.distributed.components.echo import ReplayServer, _threaded_prefetch, echo_example
-from brrrl.types import Rollout, TrainerBatch
+from brrrl.types import Array, ArrayTree, PolicyOutput, Rollout, TrainerBatch
 
 STEPS, ENVS, ROWS = 3, 2, 2
 SLOTS = STEPS + 1
@@ -60,14 +60,24 @@ HEALTH = {
 
 class Transition(NamedTuple):
     observation: Any
-    terminated: NDArray[np.bool_]
-    truncated: NDArray[np.bool_]
-    reward: NDArray[np.floating]
-    action: NDArray
+    terminated: Array
+    truncated: Array
+    reward: Array
+    action: Array
+
+    @classmethod
+    def record(cls, obs: Any, term: Array, trunc: Array, reward: Array, policy_output: PolicyOutput) -> Self:
+        """Never called: replay only round-trips these. It is here because the protocol a Trajectory
+        is held to reaches through `transitions` to this."""
+        return cls(obs, term, trunc, reward, policy_output.action)
 
 
 class Trajectory(NamedTuple):
     transitions: Transition
+
+    def per_rollout(self) -> ArrayTree:
+        """Nothing rides alongside these steps; replay carries whatever the algorithm put here."""
+        return ()
 
 
 def slots(tag: float) -> NDArray[np.float32]:

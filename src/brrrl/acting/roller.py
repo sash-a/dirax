@@ -47,8 +47,8 @@ class Roller[Obs: ArrayTree, I: PolicyInput, O: PolicyOutput, Tran: Transition, 
         # Sampled beside the act it pairs with: a Policy holds the carry its *next* act will use,
         # and only a Roller knows which act fills which slot.
         self.policy_state = self.policy.state()
-        policy_input = self.policy_input.of(self.prev_obs, self.prev_term, self.prev_trunc)
-        self.decision, self.version = self.policy.act(policy_input)
+        policy_in = self.policy_input.of(self.prev_obs, self.prev_term, self.prev_trunc)
+        self.decision, self.version = self.policy.act(policy_in)
 
     @property
     def num_transitions(self) -> int:

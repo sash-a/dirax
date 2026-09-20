@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import ray
 from ray.actor import ActorProxy
@@ -21,7 +21,7 @@ class InferenceServer[I: PolicyInput, O: PolicyOutput]:
         raise NotImplementedError
 
     @ray.method
-    def act(self, observations: I) -> tuple[O, int]:
+    def act(self, policy_input: I) -> tuple[O, int]:
         """Keys are the server's own: batching across Actors already makes such a run non-reproducible."""
         raise NotImplementedError
 
@@ -32,6 +32,10 @@ class InferenceServerPolicy[I: PolicyInput, O: PolicyOutput]:
 
     server: ActorProxy[InferenceServer[I, O]]
 
-    def act(self, observation: I) -> tuple[O, int]:
+    def act(self, policy_input: I) -> tuple[O, int]:
         """The Version rides back on a call the client was making anyway, so aligning costs nothing."""
+        raise NotImplementedError
+
+    def state(self) -> Any:
+        """Whatever the served policy carries between acts, for a Roller to record."""
         raise NotImplementedError

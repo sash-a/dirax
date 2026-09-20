@@ -7,6 +7,9 @@ a different network than the one the ratio compares it against, and nothing else
 The assembly is the driver's own rather than a double, so what these hold for is what `main` runs.
 """
 
+from typing import cast
+
+import distrax
 import gymnasium as gym
 import jax
 import jax.numpy as jnp
@@ -20,7 +23,8 @@ from brrrl.algorithms.ppo.recurrent import RecPPONetwork, make_network
 from brrrl.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput, RecPPOTrajectory
 from brrrl.learning.minibatcher import Sequences
 from brrrl.networks.head import DiscreteHead, MaskedDiscreteHead
-from brrrl.types import Params
+from brrrl.networks.recurrent import Carry
+from brrrl.types import Array, ArrayTree, Params
 
 MOMENTS, ENVS, OBS, ACTIONS, HIDDEN = 6, 4, 5, 3, 16
 SLOTS = MOMENTS + 1
@@ -49,10 +53,28 @@ def initialised(assembly: RecPPONetwork) -> Params:
     return assembly.init(jax.random.key(1), assembly.initialize_carry((ENVS,)), example)
 
 
-def over_sequence(assembly: RecPPONetwork, params: Params, moments: jax.Array, dones: jax.Array, per_rollout=None):
+type Applied = tuple[Carry, distrax.Categorical, jax.Array]
+"""Every assembly here is built over `ACT_SPACE`, so the head is a `DiscreteHead` and its
+distribution keeps the logits these read."""
+
+
+def logits(distribution: distrax.Categorical) -> jax.Array:
+    """distrax declares `logits` loosely enough that indexing one trips the checker."""
+    return cast(jax.Array, distribution.logits)
+
+
+def applied(assembly: RecPPONetwork, params: Params, carry: Carry, policy_input: RecPPOPolicyInput) -> Applied:
+    """`apply` at the width its caller has. Flax's own signature also admits the mutated-variables
+    tuple this never asks for, so the narrowing lives here rather than at every call."""
+    return assembly.apply(params, carry, policy_input)  # type: ignore
+
+
+def over_sequence(
+    assembly: RecPPONetwork, params: Params, moments: ArrayTree, dones: Array, per_rollout: Carry = None
+) -> Applied:
     """The loss's forward pass: the whole sequence at once, from the carry recorded for it."""
     carry = assembly.initialize_carry(dones.shape[1:]) if per_rollout is None else per_rollout
-    return assembly.apply(params, carry, RecPPOPolicyInput(moments, dones))
+    return applied(assembly, params, carry, RecPPOPolicyInput(moments, dones))
 
 
 def learner_forward(assembly: RecPPONetwork):
@@ -115,7 +137,7 @@ def test_stepping_one_moment_at_a_time_matches_scanning_the_sequence() -> None:
     carry, stepped = assembly.initialize_carry((ENVS,)), []
     for at in range(MOMENTS):
         timed = tree.map(lambda leaf: leaf[None], RecPPOPolicyInput(moments[at], flags[at]))
-        carry, _, value = assembly.apply(params, carry, timed)
+        carry, _, value = applied(assembly, params, carry, timed)
         stepped.append(value[0])
 
     assert jnp.allclose(scanned, jnp.stack(stepped), atol=1e-5)
@@ -129,7 +151,7 @@ def test_a_moment_reaches_every_moment_after_it() -> None:
     _, kept, _ = over_sequence(assembly, params, moments, flags)
     _, nudged, _ = over_sequence(assembly, params, moments.at[0].add(5.0), flags)
 
-    assert not any(jnp.allclose(kept.logits[at], nudged.logits[at], atol=1e-6) for at in range(MOMENTS))
+    assert not any(jnp.allclose(logits(kept)[at], logits(nudged)[at], atol=1e-6) for at in range(MOMENTS))
 
 
 def test_nothing_before_a_done_reaches_past_it() -> None:
@@ -142,7 +164,7 @@ def test_nothing_before_a_done_reaches_past_it() -> None:
     _, kept, _ = over_sequence(assembly, params, moments, boundary)
     _, nudged, _ = over_sequence(assembly, params, moments.at[0].add(5.0), boundary)
 
-    unchanged = [bool(jnp.allclose(kept.logits[at], nudged.logits[at], atol=1e-6)) for at in range(MOMENTS)]
+    unchanged = [bool(jnp.allclose(logits(kept)[at], logits(nudged)[at], atol=1e-6)) for at in range(MOMENTS)]
     assert unchanged == [False, False, True, True, True, True]
 
 
@@ -161,7 +183,7 @@ def test_the_carry_comes_back_ready_for_the_moment_after_the_one_it_ran() -> Non
     fresh = assembly.initialize_carry((ENVS,))
     ended = jnp.ones((1, ENVS), bool)
 
-    after_done, _, _ = assembly.apply(params, fresh, RecPPOPolicyInput(sequence()[:1], ended))
+    after_done, _, _ = applied(assembly, params, fresh, RecPPOPolicyInput(sequence()[:1], ended))
 
     assert jnp.allclose(after_done, fresh, atol=1e-6)
 
@@ -218,7 +240,7 @@ def test_the_loss_reads_the_carry_the_trajectory_recorded() -> None:
     rule = rule_for(assembly)
     state = rule.init(jax.random.key(4))
     recorded = trajectory()
-    blank = recorded._replace(hidden_state=jnp.zeros_like(recorded.hidden_state))
+    blank = recorded._replace(hidden_state=tree.map(jnp.zeros_like, recorded.hidden_state))
 
     from_recorded, _ = jax.jit(rule.update)(state, recorded)
     from_blank, _ = jax.jit(rule.update)(state, blank)
@@ -232,8 +254,8 @@ def test_a_trajectory_reports_the_carry_its_first_slot_acted_under() -> None:
     ``(sequences, ...)`` a minibatch is cut at."""
     recorded = trajectory()
 
-    assert recorded.hidden_state.shape == (1, 1, ENVS, HIDDEN)
-    assert recorded.per_rollout().shape == (1, ENVS, HIDDEN)
+    assert cast(jax.Array, recorded.hidden_state).shape == (1, 1, ENVS, HIDDEN)
+    assert cast(jax.Array, recorded.per_rollout()).shape == (1, ENVS, HIDDEN)
 
 
 def test_a_feed_forward_trajectory_opens_with_nothing() -> None:
