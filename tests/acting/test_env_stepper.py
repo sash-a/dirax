@@ -40,7 +40,7 @@ PAY = (1.0, 2.0, 3.0)
 
 
 class Team(gym.Env):
-    """A cooperative env in the shape rware and lbforaging report in: paid per agent, over at once."""
+    """A cooperative env in the shape we expect it."""
 
     def __init__(self, num_agents: int = AGENTS) -> None:
         self.observation_space = gym.spaces.Box(0.0, 1.0, (2,), np.float32)

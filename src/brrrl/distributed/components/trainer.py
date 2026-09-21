@@ -18,7 +18,7 @@ class Stopper(Protocol):
     """Asked before every update whether this run should end where it is."""
 
     def should_stop(self) -> bool:
-        """True to end the run after the updates already done, saving and closing as usual."""
+        """True to end the run now, saving and closing as usual."""
         ...
 
 
