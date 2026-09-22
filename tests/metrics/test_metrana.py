@@ -55,7 +55,13 @@ def module(monkeypatch: pytest.MonkeyPatch) -> FakeMetrana:
 
 def test_a_run_is_started_with_the_identity_it_was_given(module: FakeMetrana) -> None:
     MetranaLogger(
-        "team", "brrrl", "ppo-cartpole", config={"lr": 0.1}, tags=("baseline", "gpu"), description="a ladder rung"
+        "team",
+        "brrrl",
+        "ppo-cartpole",
+        experiment="ladder",
+        config={"lr": 0.1},
+        tags=("baseline", "gpu"),
+        description="a ladder rung",
     )
 
     assert module.starts == [
@@ -63,6 +69,7 @@ def test_a_run_is_started_with_the_identity_it_was_given(module: FakeMetrana) ->
             "workspace_name": "team",
             "project_name": "brrrl",
             "run_name": "ppo-cartpole",
+            "experiment_name": "ladder",
             "config": {"lr": 0.1},
             "tags": ["baseline", "gpu"],
             "description": "a ladder rung",
@@ -74,6 +81,7 @@ def test_what_was_not_given_is_left_unset_rather_than_sent_empty(module: FakeMet
     """An empty config or tag list is a claim about the run; metrana's own default is not."""
     MetranaLogger("team", "brrrl", "ppo-cartpole")
 
+    assert module.starts[0]["experiment_name"] is None
     assert module.starts[0]["config"] is None
     assert module.starts[0]["tags"] is None
 

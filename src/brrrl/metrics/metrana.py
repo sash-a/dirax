@@ -9,13 +9,18 @@ from brrrl.types import Metrics
 
 
 class MetranaLogger:
-    """Drives metrana's process-global run, so a second logger in the process is the same run."""
+    """Drives metrana's process-global run, so a second logger in the process is the same run.
+
+    `experiment` is metrana's grouping over runs; unset leaves the run ungrouped, which the UI
+    then files under whatever it infers.
+    """
 
     def __init__(
         self,
         workspace: str,
         project: str,
         run_name: str,
+        experiment: str | None = None,
         config: Mapping[str, Any] | None = None,
         tags: Sequence[str] | None = None,
         description: str | None = None,
@@ -24,6 +29,7 @@ class MetranaLogger:
             workspace_name=workspace,
             project_name=project,
             run_name=run_name,
+            experiment_name=experiment,
             config=dict(config) if config else None,
             tags=list(tags) if tags else None,
             description=description,
