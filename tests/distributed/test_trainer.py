@@ -28,13 +28,13 @@ import optax
 import pytest
 from conftest import Recorded, replicated
 
-from brrrl.checkpointing.checkpointer import Config
-from brrrl.distributed.components.trainer import Trainer
-from brrrl.distributed.components.update_rule import DataParallelUpdateRule
-from brrrl.metrics.collector import WindowedRecorder
-from brrrl.params.params import ParamStore
-from brrrl.types import Metrics, Params, PRNGKey, TrainerBatch, VersionedParams
-from brrrl.utils.duration import Duration, EveryTicks
+from dirax.checkpointing.checkpointer import Config
+from dirax.distributed.components.trainer import Trainer
+from dirax.distributed.components.update_rule import DataParallelUpdateRule
+from dirax.metrics.collector import WindowedRecorder
+from dirax.params.params import ParamStore
+from dirax.types import Metrics, Params, PRNGKey, TrainerBatch, VersionedParams
+from dirax.utils.duration import Duration, EveryTicks
 
 AXIS = "devices"
 ROWS = 4
@@ -142,7 +142,7 @@ class Save(NamedTuple):
 class Posted:
     """The checkpointer as a Trainer holds one: saves are posted and forgotten, ``wait`` drains them.
 
-    Standing in for `brrrl.distributed.components.checkpointer.RayCheckpointer`, whose store is an
+    Standing in for `dirax.distributed.components.checkpointer.RayCheckpointer`, whose store is an
     actor writing to disk on the far side of a Ray call. Which step a state was filed under and what
     the run was said to have reached by then are only readable from this end; whether the interval
     admitted the step is the checkpointer's own to decide and is tested where it lives.
@@ -175,7 +175,7 @@ class Posted:
 class Scripted:
     """Replay as a Trainer uses it: somewhere to get servers from, and batches to hand back.
 
-    Standing in for `brrrl.distributed.components.echo.ReplayServer` is what lets a test say which
+    Standing in for `dirax.distributed.components.echo.ReplayServer` is what lets a test say which
     batch arrived under which Version. That it can stand in at all, holding none of echo, is the
     case `ReplayServer`'s own TODO makes for its being a protocol.
     """

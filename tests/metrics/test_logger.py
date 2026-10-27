@@ -9,7 +9,7 @@ beside the collector it sits in front of.
 from conftest import RecordingLogger
 from etils import epath
 
-from brrrl.metrics.logger import NamespacedProcessor
+from dirax.metrics.logger import NamespacedProcessor
 
 
 def test_namespacing_prefixes_every_key_and_leaves_the_step_alone(backend: RecordingLogger) -> None:

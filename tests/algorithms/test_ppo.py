@@ -27,8 +27,8 @@ import numpy as np
 import optax
 import pytest
 
-from brrrl.acting.env_stepper import prefix
-from brrrl.algorithms.ppo.ppo import (
+from dirax.acting.env_stepper import prefix
+from dirax.algorithms.ppo.ppo import (
     PPOApply,
     PPONetwork,
     PPOUpdateRule,
@@ -36,7 +36,7 @@ from brrrl.algorithms.ppo.ppo import (
     make_network,
     normalise,
 )
-from brrrl.algorithms.ppo.types import (
+from dirax.algorithms.ppo.types import (
     PPOBatch,
     PPOPolicyInput,
     PPOTrajectory,
@@ -44,10 +44,10 @@ from brrrl.algorithms.ppo.types import (
     PPOUpdateState,
     example,
 )
-from brrrl.learning.estimators import generalised_advantages
-from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
-from brrrl.types import TRANSITIONS, Array, Params, PRNGKey
-from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION
+from dirax.learning.estimators import generalised_advantages
+from dirax.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead
+from dirax.types import TRANSITIONS, Array, Params, PRNGKey
+from dirax.wrappers.action_mask import ACTION_MASK, OBSERVATION
 
 BATCH, ROLLOUT, OBS, ACTIONS = 4, 8, 5, 3
 SLOTS = ROLLOUT + 1
@@ -208,7 +208,7 @@ def stacked(trajectory: PPOTrajectory) -> PPOTrajectory:
 
     ``acted`` builds the ``(batch, time, ...)`` the update works in and every property here reads,
     which is one merge short of what an update is handed. Widening it back is what lets both live in
-    one fixture: `brrrl.algorithms.ppo.ppo.batch_major` collapses this env axis straight back out.
+    one fixture: `dirax.algorithms.ppo.ppo.batch_major` collapses this env axis straight back out.
     """
     return jax.tree.map(lambda leaf: leaf[:, :, None], trajectory)
 

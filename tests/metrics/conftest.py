@@ -4,7 +4,7 @@ import pytest
 from etils import epath
 from numpy.typing import ArrayLike
 
-from brrrl.types import Metrics
+from dirax.types import Metrics
 
 
 @dataclass

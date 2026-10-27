@@ -19,7 +19,7 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 ├── docs/adr/
 │   ├── 0001-ray-for-placement.md
 │   └── 0002-zmq-on-the-hot-path.md
-└── src/brrrl/
+└── src/dirax/
 ```
 
 ## Use the glossary's vocabulary

@@ -12,7 +12,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from brrrl.wrappers.statistics import ENV_STATS, EPISODE_STATS, EpisodeStatistics, env_stats
+from dirax.wrappers.statistics import ENV_STATS, EPISODE_STATS, EpisodeStatistics, env_stats
 
 STEPS, SEED, AGENTS = 200, 7, 3
 PAID = (1.0, 0.0, 3.0)

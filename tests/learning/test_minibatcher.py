@@ -12,7 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brrrl.learning.minibatcher import Minibatcher, Sequences, Steps
+from dirax.learning.minibatcher import Minibatcher, Sequences, Steps
 
 SEQUENCES, MOMENTS, MINIBATCHES = 4, 6, 2
 TRAILING = 3

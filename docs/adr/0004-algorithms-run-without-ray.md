@@ -1,7 +1,7 @@
 # Algorithm files run without Ray
 
 Each file in `algorithms/` carries a `main()` that trains on a single box,
-and imports nothing from `distributed/`. `python -m brrrl.algorithms.ppo`
+and imports nothing from `distributed/`. `python -m dirax.algorithms.ppo`
 must train CartPole with no Ray anywhere in its transitive imports.
 
 This turns the layering from a convention into a CI check: if an algorithm can

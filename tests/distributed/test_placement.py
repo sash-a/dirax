@@ -14,8 +14,8 @@ import pytest
 from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from brrrl.distributed.placement.component import Behaviour
-from brrrl.distributed.placement.placement import Placement, Placements, reserve
+from dirax.distributed.placement.component import Behaviour
+from dirax.distributed.placement.placement import Placement, Placements, reserve
 
 CLAIM: dict[str, Any] = {
     "num_cpus": 2,
@@ -109,9 +109,9 @@ def test_a_variable_the_driver_adds_joins_the_claims_own() -> None:
     """A run id is minted when a run starts, so it cannot be in the config the claim was written in."""
     claim = Placement(num_cpus=1, env={"MUJOCO_GL": "egl"})
 
-    added = claim.with_env(BRRRL_RUN_ID="7")
+    added = claim.with_env(DIRAX_RUN_ID="7")
 
-    assert added.env == {"MUJOCO_GL": "egl", "BRRRL_RUN_ID": "7"}
+    assert added.env == {"MUJOCO_GL": "egl", "DIRAX_RUN_ID": "7"}
     assert added.num_cpus == 1
 
 
@@ -129,9 +129,9 @@ def test_a_variable_the_driver_adds_still_beats_a_derived_one() -> None:
 
 def test_adding_a_variable_to_a_run_reaches_every_role() -> None:
     """One call rather than six, so a driver cannot set a run id on five roles and forget the sixth."""
-    placements = Placements(trainer=Placement(num_gpus=1)).with_env(BRRRL_RUN_ID="7")
+    placements = Placements(trainer=Placement(num_gpus=1)).with_env(DIRAX_RUN_ID="7")
 
-    assert all(getattr(placements, field.name).env == {"BRRRL_RUN_ID": "7"} for field in fields(placements))
+    assert all(getattr(placements, field.name).env == {"DIRAX_RUN_ID": "7"} for field in fields(placements))
     assert placements.trainer.num_gpus == 1
 
 

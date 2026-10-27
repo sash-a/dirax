@@ -1,6 +1,6 @@
 # Placement is the caller's; behaviour is the class's
 
-brrrl never names a cluster resource. A `Placement` carries what one role's processes
+dirax never names a cluster resource. A `Placement` carries what one role's processes
 claim and where they may land, it is supplied by the caller, and every field defaults to
 unset — so a run that names no Placement lands wherever Ray will take it. The Ray options
 that encode a Component's own correctness are declared on the Component instead, and the
@@ -39,7 +39,7 @@ whose only unique power is reaching the options above.
 library that writes it hardcodes one cluster's vocabulary, and then needs an environment
 variable to fake that vocabulary locally. Deleting the hardcode deletes the mock: on a
 laptop `Placements()` claims nothing, and `ray.init()` already reads `RAY_ADDRESS` itself,
-so brrrl neither wraps nor calls it and ships no cluster detection at all.
+so dirax neither wraps nor calls it and ships no cluster detection at all.
 
 Docs lead with `label_selector` over custom `resources` because custom resources are
 *consumed*. A learner node advertising `learner: 1` can host the Trainer or the
@@ -118,7 +118,7 @@ one value, per-role `SPREAD` is a gang strategy rather than a Placement field.
 `@ray.remote` decorators — a decorated class cannot be instantiated at all, so this is
 what makes them unit-testable — and each declares `RAY_OPTIONS` instead.
 
-brrrl owns the JAX environment of every process it places, because Ray leaves
+dirax owns the JAX environment of every process it places, because Ray leaves
 `CUDA_VISIBLE_DEVICES` *unset* for a `num_gpus=0` actor rather than blanking it, and JAX
 then preallocates most of a card it was never given. A claim of no GPU derives
 `JAX_PLATFORMS=cpu`, and that is the whole of the derivation. `Placement.env` overrides it,

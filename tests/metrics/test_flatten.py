@@ -7,7 +7,7 @@ grouped. Backends take a flat namespace, so the join happens once, here, and nev
 import numpy as np
 import pytest
 
-from brrrl.metrics.flatten import flatten
+from dirax.metrics.flatten import flatten
 
 
 def test_nested_keys_are_joined_into_one_path() -> None:

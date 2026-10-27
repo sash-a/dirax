@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from jax import tree as jtree
 
-from brrrl.utils.jax import tree_add_leading_dim, tree_swapaxes, tree_transpose
+from dirax.utils.jax import tree_add_leading_dim, tree_swapaxes, tree_transpose
 
 SLOTS, ENVS, OBS = 5, 3, 2
 

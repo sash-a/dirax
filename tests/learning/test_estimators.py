@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import rlax
 
-from brrrl.learning.estimators import generalised_advantages
+from dirax.learning.estimators import generalised_advantages
 
 GAMMA, GAE_LAMBDA = 0.99, 0.95
 SLOTS, ENVS = 9, 3

@@ -211,7 +211,7 @@ wheels = [
 ]
 
 [[package]]
-name = "brrrl"
+name = "dirax"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -245,7 +245,7 @@ wandb = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "brrrl", extra = ["metrana", "mlflow", "wandb"] },
+    { name = "dirax", extra = ["metrana", "mlflow", "wandb"] },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -277,7 +277,7 @@ provides-extras = ["metrana", "mlflow", "wandb", "cuda"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "brrrl", extras = ["metrana", "mlflow", "wandb"] },
+    { name = "dirax", extras = ["metrana", "mlflow", "wandb"] },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "pytest", specifier = ">=7.0" },
     { name = "pytest-xdist", specifier = ">=3.6" },

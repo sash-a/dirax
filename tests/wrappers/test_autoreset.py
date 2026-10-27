@@ -13,7 +13,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from brrrl.wrappers.autoreset import Autoreset
+from dirax.wrappers.autoreset import Autoreset
 
 STEPS, SEED = 200, 7
 

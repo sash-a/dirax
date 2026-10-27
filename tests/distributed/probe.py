@@ -1,6 +1,6 @@
 """A Component the preflight tests place, in its own module because a worker imports it.
 
-A worker's environment carries brrrl's runtime dependencies and nothing else — `uv run` gives
+A worker's environment carries dirax's runtime dependencies and nothing else — `uv run` gives
 it the project, not the `dev` extra — so anything it imports must hold for a deployed Actor too.
 """
 
@@ -9,9 +9,9 @@ from typing import ClassVar
 
 import ray
 
-from brrrl.distributed.placement.component import Behaviour
+from dirax.distributed.placement.component import Behaviour
 
-WATCHED = ("JAX_PLATFORMS", "BRRRL_JOB_WIDE")
+WATCHED = ("JAX_PLATFORMS", "DIRAX_JOB_WIDE")
 
 
 class Probe:

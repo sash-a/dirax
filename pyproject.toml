@@ -1,5 +1,5 @@
 [project]
-name = "brrrl"
+name = "dirax"
 version = "0.1.0"
 description = "Distributed RL go brrr"
 readme = "README.md"
@@ -34,15 +34,15 @@ wandb = ["wandb>=0.19"]
 cuda = ["jax[cuda13]>=0.10.1"]
 
 [project.scripts]
-ppo = "brrrl.algorithms.ppo.ppo:main"
-ppo-rec = "brrrl.algorithms.ppo.recurrent:main"
-ppo-dist = "brrrl.algorithms.ppo.distributed:main"
+ppo = "dirax.algorithms.ppo.ppo:main"
+ppo-rec = "dirax.algorithms.ppo.recurrent:main"
+ppo-dist = "dirax.algorithms.ppo.distributed:main"
 
-# A group, not an extra: the toolchain is for working on brrrl, not for installing it, and groups
+# A group, not an extra: the toolchain is for working on dirax, not for installing it, and groups
 # stay out of the built wheel's metadata.
 [dependency-groups]
 dev = [
-    "brrrl[metrana,mlflow,wandb]",
+    "dirax[metrana,mlflow,wandb]",
     "pre-commit>=4.0",
     "pytest>=7.0",
     "pytest-xdist>=3.6",
@@ -74,4 +74,4 @@ addopts = "--strict-markers --strict-config -n auto --dist loadscope"
 
 [tool.codespell]
 skip = "uv.lock,*.ipynb,.git,.venv,.ruff_cache"
-ignore-words-list = "re-use,nd,ba,meaned,brrrl"
+ignore-words-list = "re-use,nd,ba,meaned,dirax"

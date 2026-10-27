@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brrrl.networks.torso import CNNTorso, MLPTorso, ResidualCNNTorso
+from dirax.networks.torso import CNNTorso, MLPTorso, ResidualCNNTorso
 
 NUM_ENVS = 4
 OBS_FEATURES = 8

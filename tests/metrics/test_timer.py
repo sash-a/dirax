@@ -9,7 +9,7 @@ from collections.abc import Iterator
 import numpy as np
 import pytest
 
-from brrrl.metrics.timer import AggregatedElapsed, Timer
+from dirax.metrics.timer import AggregatedElapsed, Timer
 
 
 class FakeClock:
@@ -28,7 +28,7 @@ class FakeClock:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeClock]:
     fake = FakeClock()
-    monkeypatch.setattr("brrrl.metrics.timer.time.perf_counter", fake)
+    monkeypatch.setattr("dirax.metrics.timer.time.perf_counter", fake)
     yield fake
 
 

@@ -13,7 +13,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
-from brrrl.networks.recurrent import ResetRecurrence
+from dirax.networks.recurrent import ResetRecurrence
 
 NUM_STEPS = 5
 NUM_ENVS = 4

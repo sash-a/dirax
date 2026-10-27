@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brrrl.metrics.scalar import scalars
+from dirax.metrics.scalar import scalars
 
 
 def test_a_multi_element_value_is_meaned() -> None:

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from gymnasium.vector import AutoresetMode
 
-from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
+from dirax.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
 
 CARTPOLE_OBS = 4
 ACTIONS = 2

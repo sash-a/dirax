@@ -26,11 +26,11 @@ import numpy as np
 import pytest
 from gymnasium.wrappers.vector import NormalizeReward
 
-from brrrl.acting.env_stepper import AsyncStepper, LoopedStepper, prefix
-from brrrl.wrappers.agents import Agents
-from brrrl.wrappers.autoreset import Autoreset
-from brrrl.wrappers.looped import Looped
-from brrrl.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, env_stats
+from dirax.acting.env_stepper import AsyncStepper, LoopedStepper, prefix
+from dirax.wrappers.agents import Agents
+from dirax.wrappers.autoreset import Autoreset
+from dirax.wrappers.looped import Looped
+from dirax.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS, EpisodeStatistics, env_stats
 
 NUM_ENVS, AGENTS, LENGTH, CARTPOLE_OBS = 2, 3, 5, 4
 SHAPED = 2.5

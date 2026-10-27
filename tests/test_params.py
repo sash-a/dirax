@@ -6,8 +6,8 @@ The read side is asserted through the Policy that sits at the end of the chain, 
 
 import jax.numpy as jnp
 
-from brrrl.params.params import ParamStore
-from brrrl.types import Params, VersionedParams
+from dirax.params.params import ParamStore
+from dirax.types import Params, VersionedParams
 
 
 def params(scale: float) -> Params:

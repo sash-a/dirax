@@ -8,10 +8,10 @@ never a step, which is what makes a local recorder and one across a cluster inte
 from conftest import RecordingLogger
 from etils import epath
 
-from brrrl.metrics import default_logger
-from brrrl.metrics.collector import LocalMetricRecorder, MetricCollector, Origin, WindowedRecorder
-from brrrl.metrics.logger import NamespacedProcessor
-from brrrl.utils.duration import EveryTicks
+from dirax.metrics import default_logger
+from dirax.metrics.collector import LocalMetricRecorder, MetricCollector, Origin, WindowedRecorder
+from dirax.metrics.logger import NamespacedProcessor
+from dirax.utils.duration import EveryTicks
 
 
 def test_transitions_accumulate_into_the_step_every_origin_is_logged_against(backend: RecordingLogger) -> None:

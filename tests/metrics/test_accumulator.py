@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from brrrl.metrics.accumulator import MetricAccumulator
+from dirax.metrics.accumulator import MetricAccumulator
 
 
 def test_folding_arrays_and_scalars_agrees_with_numpy_over_everything_folded() -> None:

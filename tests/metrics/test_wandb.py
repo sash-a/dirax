@@ -14,7 +14,7 @@ from etils import epath
 
 pytest.importorskip("wandb", reason="wandb is an optional extra")
 
-from brrrl.metrics.wandb import WandbLogger
+from dirax.metrics.wandb import WandbLogger
 
 
 @dataclass
@@ -45,18 +45,18 @@ def run(monkeypatch: pytest.MonkeyPatch) -> FakeRun:
         run.starts.append(arguments)
         return run
 
-    monkeypatch.setattr("brrrl.metrics.wandb.wandb.init", init)
+    monkeypatch.setattr("dirax.metrics.wandb.wandb.init", init)
     return run
 
 
 def test_a_run_is_started_with_the_identity_it_was_given(run: FakeRun) -> None:
     WandbLogger(
-        "brrrl", name="ppo-cartpole", entity="team", group="ladder", config={"lr": 0.1}, tags=("baseline", "gpu")
+        "dirax", name="ppo-cartpole", entity="team", group="ladder", config={"lr": 0.1}, tags=("baseline", "gpu")
     )
 
     assert run.starts == [
         {
-            "project": "brrrl",
+            "project": "dirax",
             "name": "ppo-cartpole",
             "entity": "team",
             "group": "ladder",
@@ -68,21 +68,21 @@ def test_a_run_is_started_with_the_identity_it_was_given(run: FakeRun) -> None:
 
 def test_what_was_not_given_is_left_unset_rather_than_sent_empty(run: FakeRun) -> None:
     """An empty config or tag list is a claim about the run; wandb's own default is not."""
-    WandbLogger("brrrl")
+    WandbLogger("dirax")
 
     assert run.starts[0]["config"] is None
     assert run.starts[0]["tags"] is None
 
 
 def test_a_record_is_reduced_and_logged_against_its_step(run: FakeRun) -> None:
-    WandbLogger("brrrl").log({"return": np.array([1.0, 3.0]), "loss": 0.5}, 40)
+    WandbLogger("dirax").log({"return": np.array([1.0, 3.0]), "loss": 0.5}, 40)
 
     assert run.records == [({"return": 2.0, "loss": 0.5}, 40)]
 
 
 def test_an_empty_record_is_not_logged(run: FakeRun) -> None:
     """wandb takes a log with no values as a step of its own, and the step is not this backend's to move."""
-    WandbLogger("brrrl").log({"return": np.array([])}, 7)
+    WandbLogger("dirax").log({"return": np.array([])}, 7)
 
     assert run.records == []
 
@@ -90,20 +90,20 @@ def test_an_empty_record_is_not_logged(run: FakeRun) -> None:
 def test_an_artifacts_directory_folds_into_a_name_with_no_slashes(run: FakeRun) -> None:
     """wandb rejects a slash in an artifact name, so the place it was filed under has to survive
     as part of the name or two Origins' checkpoints collide."""
-    WandbLogger("brrrl").log_artifact(epath.Path("/run/ckpt"), "learner/checkpoints")
+    WandbLogger("dirax").log_artifact(epath.Path("/run/ckpt"), "learner/checkpoints")
 
     assert run.artifacts == [("/run/ckpt", "learner-checkpoints-ckpt", "artifact")]
 
 
 def test_an_artifact_filed_under_no_directory_is_named_by_itself(run: FakeRun) -> None:
-    WandbLogger("brrrl").log_artifact(epath.Path("/run/video.mp4"))
+    WandbLogger("dirax").log_artifact(epath.Path("/run/video.mp4"))
 
     assert run.artifacts == [("/run/video.mp4", "video.mp4", "artifact")]
 
 
 def test_the_run_is_finished_once_however_many_chains_close_it(run: FakeRun) -> None:
     """Finishing twice is an error in wandb, and every chain in a run shares this one backend."""
-    logger = WandbLogger("brrrl")
+    logger = WandbLogger("dirax")
 
     logger.close()
     logger.close()

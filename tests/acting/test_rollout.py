@@ -26,11 +26,11 @@ from echo import TrajectoryAccumulator
 from gymnasium.vector import AutoresetMode
 from numpy.typing import ArrayLike, NDArray
 
-from brrrl.acting.env_stepper import AsyncStepper, EnvStepper, LoopedStepper, prefix
-from brrrl.acting.policy import FFPolicy
-from brrrl.acting.roller import Roller
-from brrrl.params.params import ParamSource, ParamStore
-from brrrl.types import Array, ArrayTree, Params, PRNGKey, VersionedParams
+from dirax.acting.env_stepper import AsyncStepper, EnvStepper, LoopedStepper, prefix
+from dirax.acting.policy import FFPolicy
+from dirax.acting.roller import Roller
+from dirax.params.params import ParamSource, ParamStore
+from dirax.types import Array, ArrayTree, Params, PRNGKey, VersionedParams
 
 NUM_STEPS = 4
 LENGTHS = (2, 3)

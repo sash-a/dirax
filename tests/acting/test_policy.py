@@ -12,9 +12,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from brrrl.acting.policy import FFPolicy
-from brrrl.params.params import ParamStore
-from brrrl.types import Array, Params, PRNGKey, VersionedParams
+from dirax.acting.policy import FFPolicy
+from dirax.params.params import ParamStore
+from dirax.types import Array, Params, PRNGKey, VersionedParams
 
 OBSERVATION = jnp.float32(3.0)
 

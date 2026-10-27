@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from brrrl.networks.distribution import TanhNormal, normalised_entropy, uniform_entropy
+from dirax.networks.distribution import TanhNormal, normalised_entropy, uniform_entropy
 
 NUM_ACTIONS = 3
 MONTE_CARLO_SAMPLES = 200_000

@@ -10,9 +10,9 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from brrrl.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
-from brrrl.wrappers.looped import Looped
-from brrrl.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS
+from dirax.wrappers.action_mask import ACTION_MASK, OBSERVATION, ActionMask
+from dirax.wrappers.looped import Looped
+from dirax.wrappers.statistics import ENV_STATS, EPISODE_MASK, EPISODE_STATS
 
 CARTPOLE_OBS = 4
 TAXI_ACTIONS = 6

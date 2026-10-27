@@ -5,7 +5,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from brrrl.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
+from dirax.networks.head import ContinuousHead, DiscreteHead, MaskedDiscreteHead, ValueHead
 
 NUM_ENVS = 4
 EMBEDDING = 8

@@ -5,7 +5,7 @@ recommend NNX for new projects and put Linen in maintenance mode, so this needs 
 reason beyond familiarity.
 
 NNX's whole value is the stateful module — params living inside the object, mutated in
-place. brrrl cannot use that style anywhere. `LearnerState` carries params through a
+place. dirax cannot use that style anywhere. `LearnerState` carries params through a
 scanned pure function, ADR-0003 forecasts a jitted Roller family built on explicit
 params, and every param crossing to a Param sink or a checkpoint is a plain tree of
 arrays. Adopting NNX means calling `nnx.split` at every boundary and never once holding

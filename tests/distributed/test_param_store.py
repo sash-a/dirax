@@ -17,9 +17,9 @@ from typing import Protocol, cast
 import jax.numpy as jnp
 import pytest
 
-from brrrl.distributed.components.params import RayParamSink, RayParamStore
-from brrrl.types import Params, VersionedParams
-from brrrl.utils.duration import EveryTicks
+from dirax.distributed.components.params import RayParamSink, RayParamStore
+from dirax.types import Params, VersionedParams
+from dirax.utils.duration import EveryTicks
 
 READER, OTHER = 0, 1
 SETTLE = 0.05

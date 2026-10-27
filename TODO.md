@@ -23,4 +23,4 @@
 - [x] Read through and correct ADRs
 - [ ] Read through and validate/correct tests
 - [ ] Full tests run in distributed setup
-- [ ] brrrl benchmark repo + standard set of benchmark envs/runners
+- [ ] dirax benchmark repo + standard set of benchmark envs/runners

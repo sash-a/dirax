@@ -23,8 +23,8 @@ from typing import Protocol, cast
 import pytest
 from conftest import Recorded, settled
 
-from brrrl.distributed.components.actor import Actor
-from brrrl.types import Metrics
+from dirax.distributed.components.actor import Actor
+from dirax.types import Metrics
 
 TRANSITIONS = 12
 """What one rollout of the double costs. Neither a step count nor an env count, so a confusion

@@ -1,4 +1,4 @@
-## brrrl
+## dirax
 This is a library for distributed reinforcement learning. It aims to be highly optimised and as fast as possible, while remaining understandable and hackable.
 It flexible on distribution strategies and hardware. It has different RL algorithms, both on- and off-policy.
 

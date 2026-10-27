@@ -10,7 +10,7 @@ about. This is the file that runs the real one.
 The trap it exists for is `PPOUpdateRule.batch_size`. Under a `shard_map` the rule is handed one
 shard, so the size it is built with is the per-device batch and not the run's — and the two are the
 same number on the single device the configuration was written on.
-`brrrl.algorithms.ppo.distributed` passes rollouts-per-device times envs, and the last test is why.
+`dirax.algorithms.ppo.distributed` passes rollouts-per-device times envs, and the last test is why.
 """
 
 import gymnasium as gym
@@ -23,9 +23,9 @@ from conftest import replicated
 from echo import Server
 from jax.sharding import Mesh, PartitionSpec
 
-from brrrl.acting.env_stepper import prefix
-from brrrl.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, make_network
-from brrrl.algorithms.ppo.types import (
+from dirax.acting.env_stepper import prefix
+from dirax.algorithms.ppo.ppo import ADAM_EPS, MAX_GRAD_NORM, PPOUpdateRule, make_network
+from dirax.algorithms.ppo.types import (
     PPOApply,
     PPOPolicyInput,
     PPOTrajectory,
@@ -33,10 +33,10 @@ from brrrl.algorithms.ppo.types import (
     PPOUpdateState,
     example,
 )
-from brrrl.distributed.components.echo import ReplayServer, echo_example
-from brrrl.distributed.components.update_rule import DataParallelUpdateRule
-from brrrl.types import Params, PRNGKey, Rollout
-from brrrl.utils.optax import mean_by_axis
+from dirax.distributed.components.echo import ReplayServer, echo_example
+from dirax.distributed.components.update_rule import DataParallelUpdateRule
+from dirax.types import Params, PRNGKey, Rollout
+from dirax.utils.optax import mean_by_axis
 
 AXIS = "devices"
 ROLLOUT_LEN, NUM_ENVS, PER_DEVICE = 4, 2, 2
@@ -57,7 +57,7 @@ def network() -> tuple[PPOApply, Params]:
 
 
 def optimizer() -> optax.GradientTransformation:
-    """The chain `brrrl.algorithms.ppo.distributed` builds, `mean_by_axis` first."""
+    """The chain `dirax.algorithms.ppo.distributed` builds, `mean_by_axis` first."""
     return optax.chain(mean_by_axis(AXIS), optax.clip_by_global_norm(MAX_GRAD_NORM), optax.adam(1e-3, eps=ADAM_EPS))
 
 
@@ -74,7 +74,7 @@ def rule(apply_fn: PPOApply, rollouts: int) -> PPOUpdateRule:
 
 
 def blank() -> PPOTrajectory:
-    """One rollout's buffers, built the way `brrrl.algorithms.ppo.distributed` builds them."""
+    """One rollout's buffers, built the way `dirax.algorithms.ppo.distributed` builds them."""
     return PPOTrajectory(**example(ROLLOUT_LEN, prefix(NUM_ENVS, 1), OBS_SPACE, ACT_SPACE))
 
 

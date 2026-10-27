@@ -12,7 +12,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-from brrrl.wrappers.agents import Agents, one_agent, over
+from dirax.wrappers.agents import Agents, one_agent, over
 
 AGENTS = 3
 OBS = 2

@@ -13,8 +13,8 @@ import ray
 from probe import Probe
 from ray.util.placement_group import remove_placement_group
 
-from brrrl.distributed.placement.placement import Placement, reserve
-from brrrl.distributed.placement.preflight import Placed, Unplaceable, preflight
+from dirax.distributed.placement.placement import Placement, reserve
+from dirax.distributed.placement.preflight import Placed, Unplaceable, preflight
 
 GIVE_UP = 0.5
 """How long to let an unsatisfiable claim sit before the deadline passes.
@@ -26,7 +26,7 @@ either way and only its length is ours to pick.
 RAY_TIMEOUT = 30
 """How long to wait on an actor that has been placed and should reply at once.
 
-Generous enough to cover a cold worker importing brrrl, and there only so that an actor which
+Generous enough to cover a cold worker importing dirax, and there only so that an actor which
 never started fails the run instead of hanging it — a bare ``ray.get`` waits forever.
 """
 
@@ -35,10 +35,10 @@ never started fails the run instead of hanging it — a bare ``ray.get`` waits f
 def cluster() -> Iterator[None]:
     """``PYTHONPATH`` is what lets a worker import ``Probe`` from ``probe.py`` beside this file.
 
-    ``BRRRL_JOB_WIDE`` rides along as an ordinary job-level variable, to be checked against the
-    ones brrrl derives per role.
+    ``DIRAX_JOB_WIDE`` rides along as an ordinary job-level variable, to be checked against the
+    ones dirax derives per role.
     """
-    job = {"PYTHONPATH": str(Path(__file__).parent), "BRRRL_JOB_WIDE": "kept"}
+    job = {"PYTHONPATH": str(Path(__file__).parent), "DIRAX_JOB_WIDE": "kept"}
     ray.init(num_cpus=4, num_gpus=0, include_dashboard=False, log_to_driver=False, runtime_env={"env_vars": job})
     yield
     ray.shutdown()
@@ -116,12 +116,12 @@ def test_a_placed_component_gets_the_resources_and_environment_its_claim_implies
     assert environment["JAX_PLATFORMS"] == "cpu"
 
 
-def test_job_wide_environment_variables_survive_the_ones_brrrl_derives(cluster: None) -> None:
+def test_job_wide_environment_variables_survive_the_ones_dirax_derives(cluster: None) -> None:
     """Ray merges job-level and per-actor ``env_vars`` per key, so setting a per-role variable
     must not silently drop what the caller set on their own ``ray.init``."""
     probe = Placement(num_cpus=1).apply(Probe).remote()
 
     _, environment = ray.get(probe.report.remote(), timeout=RAY_TIMEOUT)
 
-    assert environment["BRRRL_JOB_WIDE"] == "kept"
+    assert environment["DIRAX_JOB_WIDE"] == "kept"
     assert environment["JAX_PLATFORMS"] == "cpu"

@@ -10,8 +10,8 @@ plain mean over the rows of the batch, so what a correct all-reduce produces is 
 can do in their head, and a split or a reduction that is wrong is a wrong number rather than a
 slightly different loss curve.
 
-`brrrl.utils.optax.mean_by_axis` is in the optimiser chain here for the same reason it is in the
-one `brrrl.algorithms.ppo.distributed` builds: `shard_map` hands the rule a gradient already summed
+`dirax.utils.optax.mean_by_axis` is in the optimiser chain here for the same reason it is in the
+one `dirax.algorithms.ppo.distributed` builds: `shard_map` hands the rule a gradient already summed
 over the mesh, and dividing it by the axis size is what makes a device's step the step it would
 have taken over the whole batch. The two are only correct together, so they are tested together.
 """
@@ -29,9 +29,9 @@ from conftest import replicated
 from jax.sharding import Mesh, PartitionSpec
 from numpy.typing import ArrayLike
 
-from brrrl.distributed.components.update_rule import DataParallelUpdateRule
-from brrrl.types import Metrics, Params, PRNGKey, UpdateFn
-from brrrl.utils.optax import mean_by_axis
+from dirax.distributed.components.update_rule import DataParallelUpdateRule
+from dirax.types import Metrics, Params, PRNGKey, UpdateFn
+from dirax.utils.optax import mean_by_axis
 
 COLLECTION, WEIGHT = "params", "w"
 """Flax nests every parameter under the collection it belongs to, and so does `Params`. `weight`

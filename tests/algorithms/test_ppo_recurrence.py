@@ -18,13 +18,13 @@ import optax
 import pytest
 from jax import tree
 
-from brrrl.algorithms.ppo.ppo import PPOUpdateRule
-from brrrl.algorithms.ppo.recurrent import RecPPONetwork, make_network
-from brrrl.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput, RecPPOTrajectory
-from brrrl.learning.minibatcher import Sequences
-from brrrl.networks.head import DiscreteHead, MaskedDiscreteHead
-from brrrl.networks.recurrent import Carry
-from brrrl.types import Array, ArrayTree, Params
+from dirax.algorithms.ppo.ppo import PPOUpdateRule
+from dirax.algorithms.ppo.recurrent import RecPPONetwork, make_network
+from dirax.algorithms.ppo.types import PPOTrajectory, PPOTransition, RecPPOPolicyInput, RecPPOTrajectory
+from dirax.learning.minibatcher import Sequences
+from dirax.networks.head import DiscreteHead, MaskedDiscreteHead
+from dirax.networks.recurrent import Carry
+from dirax.types import Array, ArrayTree, Params
 
 MOMENTS, ENVS, OBS, ACTIONS, HIDDEN = 6, 4, 5, 3, 16
 SLOTS = MOMENTS + 1

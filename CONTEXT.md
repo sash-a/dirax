@@ -1,4 +1,4 @@
-# brrrl
+# dirax
 
 A distributed reinforcement learning library. Algorithm logic is written as if
 single-process; distribution is added by wrapping it, never by changing it.

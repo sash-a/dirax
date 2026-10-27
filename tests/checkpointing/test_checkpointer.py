@@ -17,8 +17,8 @@ import orbax.checkpoint as ocp
 import pytest
 from etils import epath
 
-from brrrl.checkpointing.checkpointer import NamedTupleLayout, OrbaxCheckpointer, get_save_path
-from brrrl.types import Params
+from dirax.checkpointing.checkpointer import NamedTupleLayout, OrbaxCheckpointer, get_save_path
+from dirax.types import Params
 
 
 class Recorded(NamedTuple):

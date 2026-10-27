@@ -16,7 +16,7 @@ import pytest
 from etils import epath
 from numpy.typing import ArrayLike
 
-from brrrl.types import Metrics
+from dirax.types import Metrics
 
 SETTLE = 5.0
 """How long to let a background thread reach a state before calling it stuck. Nothing races it."""
@@ -24,7 +24,7 @@ SETTLE = 5.0
 
 @dataclass
 class Recorded:
-    """A `brrrl.metrics.collector.MetricRecorder` that keeps what it was handed.
+    """A `dirax.metrics.collector.MetricRecorder` that keeps what it was handed.
 
     Stands in for the run's one collector, which is a Ray actor on every path that matters. What a
     Component decided — which metrics, how many transitions it accounts them to, and whether it let

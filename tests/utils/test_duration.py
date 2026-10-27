@@ -12,7 +12,7 @@ is the point.
 
 import pytest
 
-from brrrl.utils.duration import Duration, EverySeconds, EveryTicks, Instant, Schedule
+from dirax.utils.duration import Duration, EverySeconds, EveryTicks, Instant, Schedule
 
 DURATIONS: tuple[type[Duration], ...] = (EveryTicks, EverySeconds)
 """Every Duration in the module. Typed, so `ty` rejects one that does not answer ``due``."""

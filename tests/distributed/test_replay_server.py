@@ -32,9 +32,9 @@ from echo import Server, TcpClient
 from jax.sharding import Mesh, PartitionSpec
 from numpy.typing import NDArray
 
-from brrrl.algorithms.ppo.ppo import batch_major
-from brrrl.distributed.components.echo import ReplayServer, _threaded_prefetch, echo_example
-from brrrl.types import Array, ArrayTree, PolicyOutput, Rollout, TrainerBatch
+from dirax.algorithms.ppo.ppo import batch_major
+from dirax.distributed.components.echo import ReplayServer, _threaded_prefetch, echo_example
+from dirax.types import Array, ArrayTree, PolicyOutput, Rollout, TrainerBatch
 
 STEPS, ENVS, ROWS = 3, 2, 2
 SLOTS = STEPS + 1
@@ -289,7 +289,7 @@ def test_the_rollout_axis_merges_out_keeping_every_rollout_and_env_one_row_throu
     of its own: a merge that took the two axes in the other order produces a batch of exactly the
     right shape, every row of which is a walk across environments rather than through time.
 
-    `brrrl.algorithms.ppo.ppo.batch_major` is the algorithm's side of this seam rather than the
+    `dirax.algorithms.ppo.ppo.batch_major` is the algorithm's side of this seam rather than the
     component's, and it is here because a layout claim needs both ends of it to mean anything.
     """
     merged = batch_major(batch.trajectory)

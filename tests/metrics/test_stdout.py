@@ -6,7 +6,7 @@ The printed line is the whole product here, so these read it rather than the log
 import pytest
 from etils import epath
 
-from brrrl.metrics.stdout import StdoutLogger
+from dirax.metrics.stdout import StdoutLogger
 
 
 def test_one_line_per_record_names_the_step_and_every_metric(capsys: pytest.CaptureFixture[str]) -> None:

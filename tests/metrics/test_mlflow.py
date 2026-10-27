@@ -15,7 +15,7 @@ from etils import epath
 
 pytest.importorskip("mlflow", reason="mlflow is an optional extra")
 
-from brrrl.metrics.mlflow import BATCH_LIMIT, MLflowLogger
+from dirax.metrics.mlflow import BATCH_LIMIT, MLflowLogger
 
 
 @pytest.fixture(scope="module")
@@ -33,7 +33,7 @@ def artifact_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 @pytest.fixture
 def logger(tracking_uri: str) -> Iterator[MLflowLogger]:
-    logger = MLflowLogger("brrrl-tests", tracking_uri=tracking_uri)
+    logger = MLflowLogger("dirax-tests", tracking_uri=tracking_uri)
     yield logger
     logger.close()
 
@@ -63,7 +63,7 @@ def test_an_empty_record_reaches_mlflow_as_nothing(logger: MLflowLogger) -> None
 
 
 def test_the_run_is_named_and_tagged_as_asked(tracking_uri: str) -> None:
-    logger = MLflowLogger("brrrl-tests", run_name="ppo-cartpole", tracking_uri=tracking_uri, tags={"arm": "baseline"})
+    logger = MLflowLogger("dirax-tests", run_name="ppo-cartpole", tracking_uri=tracking_uri, tags={"arm": "baseline"})
     logger.close()
 
     run = logger.client.get_run(logger.run_id)
@@ -73,8 +73,8 @@ def test_the_run_is_named_and_tagged_as_asked(tracking_uri: str) -> None:
 
 def test_an_experiment_that_already_exists_is_reused_rather_than_recreated(tracking_uri: str) -> None:
     """Every run of a project belongs beside the others, and mlflow refuses a duplicate name."""
-    first = MLflowLogger("brrrl-shared", tracking_uri=tracking_uri)
-    second = MLflowLogger("brrrl-shared", tracking_uri=tracking_uri)
+    first = MLflowLogger("dirax-shared", tracking_uri=tracking_uri)
+    second = MLflowLogger("dirax-shared", tracking_uri=tracking_uri)
     first.close()
     second.close()
 
@@ -85,7 +85,7 @@ def test_an_experiment_that_already_exists_is_reused_rather_than_recreated(track
 
 def test_closing_terminates_the_run_and_can_happen_twice(tracking_uri: str) -> None:
     """Source chains share one backend, so ``close`` arrives once per chain."""
-    logger = MLflowLogger("brrrl-tests", tracking_uri=tracking_uri)
+    logger = MLflowLogger("dirax-tests", tracking_uri=tracking_uri)
 
     logger.close()
     logger.close()
@@ -136,14 +136,14 @@ class BatchRecorder:
 def batches(monkeypatch: pytest.MonkeyPatch) -> BatchRecorder:
     """Batching is arithmetic on one record, so it is read off the client rather than out of a store."""
     recorder = BatchRecorder()
-    monkeypatch.setattr("brrrl.metrics.mlflow.MlflowClient", lambda *_, **__: recorder)
+    monkeypatch.setattr("dirax.metrics.mlflow.MlflowClient", lambda *_, **__: recorder)
     return recorder
 
 
 def test_a_record_wider_than_mlflow_accepts_is_split_into_batches_it_does(batches: BatchRecorder) -> None:
     """Per-layer gradient norms alone can run to thousands of keys, and mlflow rejects the whole
     batch rather than truncating it, so one wide record would lose every metric in it."""
-    logger = MLflowLogger("brrrl-tests")
+    logger = MLflowLogger("dirax-tests")
 
     logger.log({f"grad/{index}": float(index) for index in range(2 * BATCH_LIMIT + 1)}, 0)
 
@@ -152,7 +152,7 @@ def test_a_record_wider_than_mlflow_accepts_is_split_into_batches_it_does(batche
 
 def test_an_empty_record_is_not_sent_as_an_empty_batch(batches: BatchRecorder) -> None:
     """mlflow counts an empty batch against the run's request quota and stores nothing for it."""
-    logger = MLflowLogger("brrrl-tests")
+    logger = MLflowLogger("dirax-tests")
 
     logger.log({}, 0)
 
