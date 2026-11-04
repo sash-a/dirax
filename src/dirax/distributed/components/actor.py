@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from typing import ClassVar
 
@@ -10,6 +11,8 @@ from dirax.acting.roller import Roller
 from dirax.distributed.placement.component import Behaviour
 from dirax.metrics.collector import MetricRecorder
 from dirax.metrics.timer import AggregatedElapsed, Timer
+
+logger = logging.getLogger(__name__)
 
 
 class Actor:
@@ -59,33 +62,47 @@ class Actor:
 
 
 class ActorMonitor:
-    def __init__(self, actors: list[ActorHandle[Actor]], max_restarts: int):
+    RAY_OPTIONS: ClassVar[Behaviour] = {"max_concurrency": 2}
+    """``run`` holds a thread for the life of the run, so ``close`` needs the second one."""
+
+    def __init__(self, actors: list[ActorHandle[Actor]], max_restarts: int, metric_recorder: MetricRecorder):
         self.actors = actors
         self.remaining_restarts = {actor: max_restarts for actor in actors}
+        self.metric_recorder = metric_recorder
+        self.num_restarts = 0
+        self.stop = False
 
     @ray.method
     def run(self) -> None:
         futures = {actor.run.remote(): actor for actor in self.actors}
+        errors: list[Exception] = []
 
         while futures:
+            done, _ = ray.wait(list(futures), num_returns=1)
+            actor = futures.pop(done[0])
             try:
-                completes, _ = ray.wait(list(futures.keys()), num_returns=1)
-                complete_run = completes[0]
-                complete_actor = futures.pop(complete_run)
-                ray.get(completes[0])
-            except RayTaskError:
-                ray.kill(complete_actor, no_restart=False)
-            # will this run for a task error? I want to run both blocks
+                ray.get(done[0])
             except (RayTaskError, RayActorError) as e:
-                if self.remaining_restarts[complete_actor] == 0:
-                    ray.get(self.close())
-                    raise e
+                errors.append(e)
+                if self.stop:  # we are done, don't restart the actor
+                    continue
+                # exceeded max restarts, kill all actors and catch any of their errors
+                if self.remaining_restarts[actor] == 0:
+                    self.close()
+                    continue
 
-                self.remaining_restarts[complete_actor] -= 1
-                print(f"Restarting actor (id: {complete_actor}). It died with error {e}")
-                # is this definitely the restarted actor?
-                futures[complete_actor.run.remote()] = complete_actor
+                self.remaining_restarts[actor] -= 1
+                self.num_restarts += 1
+                self.metric_recorder.record({"actor_restarts": self.num_restarts})
+                logger.warning("Restarting actor %s. It died with %s: %s", actor, type(e).__name__, e)
+                if isinstance(e, RayTaskError):
+                    ray.kill(actor, no_restart=False)
+                futures[actor.run.remote()] = actor
+
+        if errors:
+            raise ExceptionGroup("actors failed", errors)
 
     @ray.method
     def close(self) -> list[ActorHandle]:
+        self.stop = True
         return [actor.close.remote() for actor in self.actors]
