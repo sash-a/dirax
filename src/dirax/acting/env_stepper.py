@@ -33,20 +33,7 @@ def same[E](env: E) -> E:
 class EnvStepper[Obs, Act](Protocol):
     """The gymnasium step API, with a leading env axis and an agent axis where there is a team.
 
-    Reward, both flags and every field derived from them arrive at ``(E, A, ...)`` for an env with a
-    team acting in it, and at ``(E, ...)`` for one with a single agent, which has no agent axis at
-    all. `prefix` is that leading shape, and the only place the arity is asked.
-
-    A width-one axis would be the tidier contract here, and it was the one this had. It cost more
-    than it bought: nothing downstream branches on the arity either way — a Learner's arithmetic is
-    polymorphic over leading axes, the same property that lets acting at ``(E, ...)`` and learning at
-    ``(T, E, ...)`` call one network — while a width-one axis obliged every network written for a
-    single agent to produce an agent axis nobody had asked about (ADR-0012).
-
-    Beside the step it reports its finished episodes in the vector episode-statistics schema:
-    full-width ``r``, ``l`` and ``t`` under ``episode``, and the boolean mask naming which envs
-    finished under ``_episode``. That contract is what lets a Roller read episodes the same way
-    whatever built the environments.
+    Shape is either ``(E, A, ...)`` for a multi-agent enb, and ``(E, ...)`` for a single-agent env.
     """
 
     @property
