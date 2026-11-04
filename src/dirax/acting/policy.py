@@ -56,9 +56,7 @@ class FFPolicy[I: PolicyInput, O: PolicyOutput]:
 class RecPolicy[I: PolicyInput, O: PolicyOutput]:
     """An `FFPolicy` that also carries hidden state, which stays on the device between acts.
 
-    What it holds is always the carry its next act will use: the act function replaces the carry on
-    the way out of a step that ended an episode, so a reader never has to know which flags to apply
-    to it first. That is the same reset the learn-time scan performs, one slot apart.
+    It always holds the hidden state it's next ``act`` will use.
     """
 
     def __init__(self, act_fn: RecActFn[I, O], carry: ArrayTree, source: ParamSource, key: PRNGKey) -> None:
@@ -75,12 +73,7 @@ class RecPolicy[I: PolicyInput, O: PolicyOutput]:
         return self.params.version
 
     def act(self, policy_input: I) -> tuple[O, int]:
-        """Only the output crosses to the host; the carry stays where the next act will want it.
-
-        TODO: nothing carries the initial carry to the Learner yet, so a loss starts each sequence
-         from a fresh one. Storing it costs one transfer per Trajectory, or one per step if a
-         sampled chunk has to begin mid-episode.
-        """
+        """Only the output crosses to the host; the carry stays where the next act will want it."""
         version = self.sync()
         self.key, key = jax.random.split(self.key)
         output, self.carry = self.act_fn(self.params.value, policy_input, key, self.carry)
