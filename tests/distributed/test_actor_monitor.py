@@ -76,6 +76,20 @@ def starts(ledger: Path) -> int:
     return len(ledger.read_text().splitlines())
 
 
+def gone(actor: object) -> bool:
+    """Waits for the kill to land, which Ray does not do before ``ray.kill`` returns."""
+    settled(lambda: _dead(actor))
+    return _dead(actor)
+
+
+def _dead(actor: object) -> bool:
+    try:
+        ray.get(actor.ping.remote(), timeout=JOIN)  # ty: ignore[unresolved-attribute]
+    except RayActorError:
+        return True
+    return False
+
+
 @pytest.fixture(params=[False, True], ids=["raises", "crashes"])
 def crash(request: pytest.FixtureRequest) -> bool:
     """A run that raises leaves its process up and one that crashes takes it down, which reach the
@@ -103,6 +117,8 @@ def test_an_actor_that_always_fails_is_restarted_up_to_its_budget_and_then_the_r
     assert starts(broken_ledger) == max_restarts + 1
     assert starts(healthy_ledger) == 1
     assert [metrics for metrics, _ in recorder.records] == [{"actor_restarts": n} for n in (1, 2)]
+    assert gone(broken)
+    assert gone(healthy)
 
 
 def test_the_budget_is_each_actors_own(cluster: None, tmp_path: Path) -> None:
@@ -115,6 +131,7 @@ def test_the_budget_is_each_actors_own(cluster: None, tmp_path: Path) -> None:
     monitoring.monitor.close()
 
     assert monitoring.finish() is None
+    assert all(gone(actor) for actor in [first, second])
     assert monitoring.monitor.num_restarts == 4
 
 
@@ -149,6 +166,7 @@ def test_an_actor_that_failed_once_and_recovered_does_not_fail_the_run(
     monitoring.monitor.close()
 
     assert monitoring.finish() is None
+    assert gone(flaky)
 
 
 def test_an_actor_that_fails_while_the_run_is_stopping_is_reported_and_not_restarted(
@@ -181,3 +199,4 @@ def test_a_clean_shutdown_returns_without_error(cluster: None, tmp_path: Path) -
     monitoring.monitor.close()
 
     assert monitoring.finish() is None
+    assert all(gone(actor) for actor in actors)

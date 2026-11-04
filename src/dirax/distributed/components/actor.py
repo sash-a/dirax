@@ -96,37 +96,41 @@ class ActorMonitor:
     @ray.method
     def run(self) -> None:
         """Starts all actors, monitors them for crashes and restarts them up to `max_restarts`."""
-        futures = {actor.run.remote(): actor for actor in self.actors}
-        errors: list[Exception] = []
+        try:
+            futures = {actor.run.remote(): actor for actor in self.actors}
+            errors: list[Exception] = []
 
-        while futures:
-            done, _ = ray.wait(list(futures), num_returns=1)
-            actor = futures.pop(done[0])
-            try:
-                ray.get(done[0])
-            except (RayTaskError, RayActorError) as e:
-                if self.stop or self.remaining_restarts[actor] == 0:
-                    errors.append(e)
-                if self.stop:  # we are done, don't restart the actor
-                    continue
-                # exceeded max restarts, kill all actors and catch any of their errors
-                if self.remaining_restarts[actor] == 0:
-                    self.close()
-                    continue
+            while futures:
+                done, _ = ray.wait(list(futures), num_returns=1)
+                actor = futures.pop(done[0])
+                try:
+                    ray.get(done[0])
+                except (RayTaskError, RayActorError) as e:
+                    if self.stop or self.remaining_restarts[actor] == 0:
+                        errors.append(e)
+                    if self.stop:  # we are done, don't restart the actor
+                        continue
+                    # exceeded max restarts, kill all actors and catch any of their errors
+                    if self.remaining_restarts[actor] == 0:
+                        self.close()
+                        continue
 
-                self.remaining_restarts[actor] -= 1
-                self.num_restarts += 1
-                self.metric_recorder.record({"actor_restarts": self.num_restarts})
-                logger.warning("Restarting actor %s. It died with %s: %s", actor, type(e).__name__, e)
-                previous = None
-                if isinstance(e, RayTaskError):
-                    previous = self._id_of(actor)
-                    ray.kill(actor, no_restart=False)
-                if not self._await_restart(actor, previous):
-                    errors.append(e)
-                    self.close()
-                    continue
-                futures[actor.run.remote()] = actor
+                    self.remaining_restarts[actor] -= 1
+                    self.num_restarts += 1
+                    self.metric_recorder.record({"actor_restarts": self.num_restarts})
+                    logger.warning("Restarting actor %s. It died with %s: %s", actor, type(e).__name__, e)
+                    previous = None
+                    if isinstance(e, RayTaskError):
+                        previous = self._id_of(actor)
+                        ray.kill(actor, no_restart=False)
+                    if not self._await_restart(actor, previous):
+                        errors.append(e)
+                        self.close()
+                        continue
+                    futures[actor.run.remote()] = actor
+        finally:
+            for actor in self.actors:
+                ray.kill(actor, no_restart=True)
 
         if errors:
             raise ExceptionGroup("actors failed", errors)
