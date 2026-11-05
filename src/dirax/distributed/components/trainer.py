@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import ClassVar, Protocol
 
@@ -78,8 +79,10 @@ class Trainer[S: UpdateState, T: Trajectory]:
                 start_time = time.monotonic()
                 with self.timer("traj_wait_time"):
                     batch = next(self.dataset, None)
-                if batch is None:  # the replay servers were closed under a run waiting on them
-                    break
+                if batch is None:
+                    if self.stopping:  # close closed the servers under a run waiting on them
+                        break
+                    raise RuntimeError("The replay servers closed, but the Trainer had not been asked to stop.")
                 trajectory, roller_version, replay_metrics = batch
 
                 with self.timer("update_dispatch_time"):
@@ -117,8 +120,16 @@ class Trainer[S: UpdateState, T: Trajectory]:
                 force=True,
             )
             self.checkpointer.wait()
+
+            # Actors keep sending after the last update, so we need to keep the server replying with
+            # ACKS so the actor don't get and can gracefully shutdown.
+            threading.Thread(target=self._drain, daemon=True, name="trainer-discard").start()
         finally:
             self.metric_recorder.close()
+
+    def _drain(self) -> None:
+        for _ in self.dataset:
+            pass
 
     @ray.method
     def close(self) -> None:

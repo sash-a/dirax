@@ -8,7 +8,7 @@ import ray
 from echo import TcpClient
 from ray import ObjectRef
 from ray.actor import ActorHandle
-from ray.exceptions import RayActorError, RayTaskError
+from ray.exceptions import GetTimeoutError, RayActorError, RayError
 
 from dirax.acting.roller import Roller
 from dirax.distributed.placement.component import Behaviour
@@ -18,6 +18,8 @@ from dirax.metrics.timer import AggregatedElapsed, Timer
 logger = logging.getLogger(__name__)
 
 PING_INTERVAL = 0.1
+PING_TIMEOUT = 5.0
+"""A ping to an actor that is wedged or still restarting would otherwise wait forever."""
 
 
 class Actor:
@@ -106,29 +108,10 @@ class ActorMonitor:
                 actor = futures.pop(done[0])
                 try:
                     ray.get(done[0])
-                except (RayTaskError, RayActorError) as e:
-                    if self.stop or self.remaining_restarts[actor] == 0:
-                        errors.append(e)
-                    if self.stop:  # we are done, don't restart the actor
-                        continue
-                    # exceeded max restarts, kill all actors and catch any of their errors
-                    if self.remaining_restarts[actor] == 0:
-                        self._stop_actors()
-                        continue
-
-                    self.remaining_restarts[actor] -= 1
-                    self.num_restarts += 1
-                    self.metric_recorder.record({"actor_restarts": self.num_restarts})
-                    logger.warning("Restarting actor %s. It died with %s: %s", actor, type(e).__name__, e)
-                    previous = None
-                    if isinstance(e, RayTaskError):
-                        previous = self._id_of(actor)
-                        ray.kill(actor, no_restart=False)
-                    if not self._await_restart(actor, previous):
-                        errors.append(e)
-                        self._stop_actors()
-                        continue
-                    futures[actor.run.remote()] = actor
+                except RayError as e:
+                    restarted = self._handle_failure(actor, e, errors)
+                    if restarted is not None:
+                        futures[restarted] = actor
         finally:
             for actor in self.actors:
                 ray.kill(actor, no_restart=True)
@@ -136,11 +119,35 @@ class ActorMonitor:
         if errors:
             raise ExceptionGroup("actors failed", errors)
 
+    def _handle_failure(self, actor: ActorHandle[Actor], error: RayError, errors: list[Exception]) -> ObjectRef | None:
+        """Restarts a failed actor, returning its new ``run``, or None if it is not to be restarted."""
+        exhausted = self.remaining_restarts[actor] == 0
+        if self.stop or exhausted:
+            errors.append(error)
+            if not self.stop:  # exceeded max restarts, stop every actor and collect their errors
+                self._stop_actors()
+            return None
+
+        self.remaining_restarts[actor] -= 1
+        self.num_restarts += 1
+        self.metric_recorder.record({"actor_restarts": self.num_restarts})
+        logger.warning("Restarting actor %s. It died with %s: %s", actor, type(error).__name__, error)
+
+        previous = None
+        if not isinstance(error, RayActorError):  # the process is still up, with everything ``run`` released
+            previous = self._id_of(actor)
+            ray.kill(actor, no_restart=False)
+        if not self._await_restart(actor, previous):
+            errors.append(error)
+            self._stop_actors()
+            return None
+        return actor.run.remote()
+
     def _id_of(self, actor: ActorHandle[Actor]) -> str | None:
         """Get the current ID of an actor returned from its `ping` method."""
         try:
-            return ray.get(actor.ping.remote())
-        except RayActorError:
+            return ray.get(actor.ping.remote(), timeout=PING_TIMEOUT)
+        except (RayActorError, GetTimeoutError):
             return None
 
     def _await_restart(self, actor: ActorHandle[Actor], previous: str | None) -> bool:

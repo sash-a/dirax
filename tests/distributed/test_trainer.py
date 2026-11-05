@@ -213,6 +213,7 @@ class Starved:
 
     batches: list[TrainerBatch[Any]]
     built: list[Stopping] = field(default_factory=list)
+    handed: int = 0
 
     def servers(self, devices: list[jax.Device]) -> list[Stopping]:
         self.built = [Stopping(PORT + index) for index in range(len(devices))]
@@ -220,7 +221,9 @@ class Starved:
 
     def dataset(self, servers: list[Stopping], sharding: jax.NamedSharding) -> Any:
         def feed() -> Any:
-            yield from self.batches
+            for batch in self.batches:
+                self.handed += 1
+                yield batch
             while not servers[0].closed:
                 time.sleep(0.01)
 
@@ -269,7 +272,12 @@ def batches(health: list[Any] | None = None) -> list[TrainerBatch[Any]]:
     ]
 
 
-def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None = None, starved: bool = False) -> Wired:
+def build(
+    feed: list[TrainerBatch[Any]] | None = None,
+    window: Duration | None = None,
+    starved: bool = False,
+    updates: int | None = None,
+) -> Wired:
     """The Store is seeded here so the Version the Trainer's opening publish lands on is stated.
     A run's store starts empty and the Learner's own publish is its first entry; a `ParamStore`
     cannot hold nothing, so this stands in at the Version before it.
@@ -278,8 +286,9 @@ def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None =
     is the chain a run builds; None leaves the Trainer recording straight into it.
     """
     store = ParamStore(VersionedParams(initial_params(), 0))
-    replay = Starved(batches()[:1]) if starved else Scripted(batches() if feed is None else feed)
-    num_updates = len(MEANS) if starved else len(replay.batches)
+    held = batches() if updates is not None else batches()[:1]
+    replay = Starved(held) if starved else Scripted(batches() if feed is None else feed)
+    num_updates = updates or (len(MEANS) if starved else len(replay.batches))
     collected = Recorded()
     recorder = WindowedRecorder(collected, window) if window is not None else collected
     rule = DataParallelUpdateRule(Decimals(), AXIS)
@@ -543,3 +552,30 @@ def test_a_trainer_closed_before_it_starts_takes_no_batch_and_still_lands_its_ch
     assert recorded(wired) == []
     assert [save.force for save in wired.checkpointer.saves] == [True]
     assert wired.checkpointer.waits == 1
+
+
+def test_what_actors_send_after_the_last_update_is_still_read_so_their_sends_are_acknowledged() -> None:
+    """A send blocked on a full replay waits for an ack that no stop flag can interrupt, so a run
+    that has trained all it will has to keep taking batches and dropping them until it is closed.
+    ``run`` itself still returns when training is done, which is what the driver waits on."""
+    wired = build(starved=True, updates=1)
+
+    wired.trainer.run()
+    settled(lambda: wired.replay.handed == len(MEANS))
+
+    assert wired.replay.handed == len(MEANS)
+    assert wired.collected.closes == 1
+    wired.trainer.close()
+
+
+def test_replay_closing_under_a_trainer_that_was_not_asked_to_stop_is_an_error() -> None:
+    """Closing the servers is how a waiting loop is told to stop, and only ``close`` does it. Any
+    other end to the data is a replay that died, and a run that carried on to a final checkpoint
+    would report success for it."""
+    wired = build(starved=True)
+    wired.replay.built[0].closed = True
+
+    with pytest.raises(RuntimeError, match="had not been asked to stop"):
+        wired.trainer.run()
+
+    assert wired.collected.closes == 1

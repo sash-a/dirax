@@ -86,6 +86,10 @@ def rescaled(env: gym.Env) -> gym.Env:
     return env
 
 
+RESTART_TIMEOUT = 300.0
+"""How long the monitor may wait on one actor's restart, which ``close`` has to be able to outlast."""
+
+
 def close(
     actor_monitor: ActorProxy[ActorMonitor],
     monitor_run: ObjectRef,
@@ -95,24 +99,27 @@ def close(
     checkpointer: RayCheckpointer[PPOUpdateState],
     timeout: float = 60,
 ) -> None:
-    """Unwind outwards from what blocks: the Actors, then the Trainer they send to, then the collector.
+    """Close components in order of what blocks: the Actors, then the Trainer, then the collector.
 
     Raises:
-        TimeoutError: The Actors or the Trainer were still running ``timeout`` seconds after being asked to close.
+        TimeoutError: The Actors or the Trainer were still running after being asked to close.
     """
+    stuck: list[str] = []
     actor_monitor.close.remote()
-    actors_stopped, _ = ray.wait([monitor_run], timeout=timeout)
+    actors_stopped, _ = ray.wait([monitor_run], timeout=timeout + RESTART_TIMEOUT)
     if not actors_stopped:
-        raise TimeoutError(f"actors still running {timeout:g}s after close")
+        stuck.append("actors")
 
     trainer.close.remote()
     trainer_stopped, _ = ray.wait([trainer_run], timeout=timeout)
     if not trainer_stopped:
-        raise TimeoutError(f"trainer still running {timeout:g}s after close")
+        stuck.append("trainer")
 
     checkpointer.close()
     ray.get(collector.close.remote(), timeout=timeout)
-    ray.get([*actors_stopped, *trainer_stopped])  # Either dying mid-run is a real error, not a quiet one.
+    ray.get([*actors_stopped, *trainer_stopped], timeout=0)  # Either dying mid-run is a real error, not a quiet one.
+    if stuck:
+        raise TimeoutError(f"{' and '.join(stuck)} still running after close")
 
 
 def main():
@@ -242,7 +249,7 @@ def main():
         for i in actor_ids
     ]
     actor_monitor = placements.monitor.apply(ActorMonitor).remote(
-        actors, max_restarts=3, metric_recorder=actor_recorder
+        actors, max_restarts=3, metric_recorder=actor_recorder, restart_timeout=RESTART_TIMEOUT
     )
     preflight(
         [Placed("actor", placements.actor, actor) for actor in actors]
