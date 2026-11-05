@@ -6,6 +6,7 @@ from typing import ClassVar
 
 import ray
 from echo import TcpClient
+from ray import ObjectRef
 from ray.actor import ActorHandle
 from ray.exceptions import RayActorError, RayTaskError
 
@@ -97,7 +98,7 @@ class ActorMonitor:
     def run(self) -> None:
         """Starts all actors, monitors them for crashes and restarts them up to `max_restarts`."""
         try:
-            futures = {actor.run.remote(): actor for actor in self.actors}
+            futures: dict[ObjectRef, ActorHandle[Actor]] = {actor.run.remote(): actor for actor in self.actors}
             errors: list[Exception] = []
 
             while futures:
@@ -112,7 +113,7 @@ class ActorMonitor:
                         continue
                     # exceeded max restarts, kill all actors and catch any of their errors
                     if self.remaining_restarts[actor] == 0:
-                        self.close()
+                        self._stop_actors()
                         continue
 
                     self.remaining_restarts[actor] -= 1
@@ -125,7 +126,7 @@ class ActorMonitor:
                         ray.kill(actor, no_restart=False)
                     if not self._await_restart(actor, previous):
                         errors.append(e)
-                        self.close()
+                        self._stop_actors()
                         continue
                     futures[actor.run.remote()] = actor
         finally:
@@ -153,6 +154,11 @@ class ActorMonitor:
         return False
 
     @ray.method
-    def close(self) -> list[ActorHandle]:
+    def close(self) -> None:
+        """Asks every actor to stop and returns without waiting; ``run`` returns once they all have."""
+        self._stop_actors()
+
+    def _stop_actors(self) -> None:
         self.stop = True
-        return [actor.close.remote() for actor in self.actors]
+        for actor in self.actors:
+            actor.close.remote()

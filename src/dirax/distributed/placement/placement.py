@@ -99,10 +99,11 @@ class Placements:
 
     trainer: Placement = Placement()
     actor: Placement = Placement()
+    monitor: Placement = Placement(num_cpus=1, num_gpus=0)
     inference_server: Placement = Placement()
     params: Placement = Placement()
     metrics: Placement = Placement()
-    checkpoints: Placement = Placement()
+    checkpoints: Placement = Placement(num_cpus=1, num_gpus=0)
 
     def with_env(self, **env: str) -> Self:
         """Every role's claim plus ``env``, so a driver cannot set a run id on five roles and miss the sixth."""

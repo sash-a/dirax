@@ -168,19 +168,26 @@ def test_an_unset_claim_has_nothing_to_reserve() -> None:
     assert Placement().bundle() == {}
 
 
-def test_every_role_is_a_field_and_defaults_to_an_unset_placement() -> None:
+def test_every_role_is_a_field_and_defaults_to_an_unset_placement_unless_it_never_needs_a_gpu() -> None:
     """An open mapping would leave a misspelled role unplaced with no error — the silence this removes."""
     placements = Placements()
 
     assert {field.name for field in fields(placements)} == {
         "trainer",
         "actor",
+        "monitor",
         "inference_server",
         "params",
         "metrics",
         "checkpoints",
     }
-    assert all(getattr(placements, field.name) == Placement() for field in fields(placements))
+    one_cpu = Placement(num_cpus=1, num_gpus=0)
+    claiming = {"monitor", "checkpoints"}
+    """Processes that only coordinate or write, so they claim a CPU and never a GPU."""
+    assert all(
+        getattr(placements, field.name) == (one_cpu if field.name in claiming else Placement())
+        for field in fields(placements)
+    )
 
 
 def test_reserving_a_claim_that_asks_for_nothing_is_refused_rather_than_left_to_hang() -> None:

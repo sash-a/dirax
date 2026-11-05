@@ -18,6 +18,8 @@ built over a different sharding than the update was compiled against, a version 
 the wrong side, a replay server the driver never stopped, a final state the run never wrote.
 """
 
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Protocol, cast
 
@@ -26,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
-from conftest import Recorded, replicated
+from conftest import Recorded, replicated, settled
 
 from dirax.checkpointing.checkpointer import Config
 from dirax.distributed.components.trainer import Trainer
@@ -193,6 +195,38 @@ class Scripted:
         return iter(self.batches)
 
 
+class Bail(Exception):
+    """What replay raises when a test wants a Trainer to come apart mid-run."""
+
+
+def failing() -> Any:
+    raise Bail("replay")
+    yield
+
+
+@dataclass
+class Starved:
+    """Replay that hands back its batches and then waits for a batch no Actor is left to send.
+
+    Ends the way an echo iterator does when its server is closed under it: it stops iterating.
+    """
+
+    batches: list[TrainerBatch[Any]]
+    built: list[Stopping] = field(default_factory=list)
+
+    def servers(self, devices: list[jax.Device]) -> list[Stopping]:
+        self.built = [Stopping(PORT + index) for index in range(len(devices))]
+        return self.built
+
+    def dataset(self, servers: list[Stopping], sharding: jax.NamedSharding) -> Any:
+        def feed() -> Any:
+            yield from self.batches
+            while not servers[0].closed:
+                time.sleep(0.01)
+
+        return feed()
+
+
 class InProcess(Protocol):
     """A Trainer as a test holds one, which is not the view `ray.method` gives its methods.
 
@@ -214,7 +248,7 @@ class Wired:
     """One Trainer and everything it was built over, which is where the assertions are."""
 
     trainer: InProcess
-    replay: Scripted
+    replay: Scripted | Starved
     store: ParamStore
     checkpointer: Posted
     collected: Recorded
@@ -235,7 +269,7 @@ def batches(health: list[Any] | None = None) -> list[TrainerBatch[Any]]:
     ]
 
 
-def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None = None) -> Wired:
+def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None = None, starved: bool = False) -> Wired:
     """The Store is seeded here so the Version the Trainer's opening publish lands on is stated.
     A run's store starts empty and the Learner's own publish is its first entry; a `ParamStore`
     cannot hold nothing, so this stands in at the Version before it.
@@ -244,13 +278,14 @@ def build(feed: list[TrainerBatch[Any]] | None = None, window: Duration | None =
     is the chain a run builds; None leaves the Trainer recording straight into it.
     """
     store = ParamStore(VersionedParams(initial_params(), 0))
-    replay = Scripted(batches() if feed is None else feed)
+    replay = Starved(batches()[:1]) if starved else Scripted(batches() if feed is None else feed)
+    num_updates = len(MEANS) if starved else len(replay.batches)
     collected = Recorded()
     recorder = WindowedRecorder(collected, window) if window is not None else collected
     rule = DataParallelUpdateRule(Decimals(), AXIS)
     checkpointer = Posted()
     trainer = Trainer(
-        len(replay.batches),
+        num_updates,
         TIMESTEPS_PER_DEVICE,
         jax.random.key(3),
         rule,
@@ -415,29 +450,46 @@ def test_the_dataset_is_built_over_the_very_sharding_the_update_was_compiled_aga
     assert wired.replay.shardings == [data_sharding]
 
 
-def test_close_stops_every_replay_server_and_lets_go_of_the_recorder() -> None:
+def test_close_stops_every_replay_server_and_leaves_the_recorder_to_run() -> None:
     """Called once every Actor has stopped and never before: the drainer threads behind these
     servers are what acknowledge an Actor's in-flight sends, and an Actor blocked in ``send`` is
-    waiting on an acknowledgement rather than on anything it can be told to abandon."""
+    waiting on an acknowledgement rather than on anything it can be told to abandon. The recorder
+    is ``run``'s to release, because a caller here is on another thread and would close it under an
+    update still recording."""
     wired = build()
-    wired.trainer.run()
 
     wired.trainer.close()
 
     assert all(server.closed for server in wired.replay.built)
+    assert wired.collected.closes == 0
+
+
+def test_a_run_that_has_left_its_loop_has_let_go_of_the_recorder() -> None:
+    wired = build()
+
+    wired.trainer.run()
+
     assert wired.collected.closes == 1
 
 
-def test_a_window_that_never_filled_still_reaches_the_collector_when_the_trainer_closes() -> None:
+def test_a_run_that_raises_still_lets_go_of_the_recorder_and_is_not_swallowed() -> None:
+    wired = build()
+    wired.trainer.dataset = failing()  # ty: ignore[invalid-assignment]
+
+    with pytest.raises(Bail):
+        wired.trainer.run()
+
+    assert wired.collected.closes == 1
+
+
+def test_a_window_that_never_filled_still_reaches_the_collector_when_the_run_ends() -> None:
     """A learner records once an update, and a run that stops mid-window would otherwise lose every
     metric since the last flush — including the ones from the update it stopped on."""
     wired = build(window=NEVER_FILLS)
+
     wired.trainer.run()
-    reached = len(wired.collected.records)
 
-    wired.trainer.close()
-
-    assert reached == 1  # the first record goes straight through, so a run says something at once
+    assert len(wired.collected.records) == 2  # the first record goes straight through, then the flush
     held = wired.collected.records[-1][0]
     assert float(np.asarray(held["staleness/mean"])) == pytest.approx(np.mean(STALENESS[1:]))
 
@@ -449,7 +501,6 @@ def test_a_metric_that_arrives_as_a_list_is_folded_like_any_other() -> None:
     wired = build(feed=batches([[1.0, 2.0, 3.0]] * len(MEANS)), window=NEVER_FILLS)
 
     wired.trainer.run()
-    wired.trainer.close()
 
     held = wired.collected.records[-1][0]
     assert float(np.asarray(held["replay_queue_depth_max/mean"])) == pytest.approx(2.0)
@@ -462,3 +513,33 @@ def test_the_replay_addresses_name_one_port_per_server() -> None:
     ports = [address.rsplit(":", 1)[1] for address in wired.trainer.get_replay_addresses()]
 
     assert ports == [str(server.port) for server in wired.replay.built]
+
+
+def test_a_trainer_closed_from_another_thread_leaves_a_loop_waiting_on_replay_and_lands_its_checkpoint() -> None:
+    """The shape a real teardown has: the Actors are gone, so the batch the loop is waiting on is
+    never coming and no flag will be read. Closing the servers is what ends the wait, and the run
+    still owes the store its final state."""
+    wired = build(starved=True)
+    running = threading.Thread(target=wired.trainer.run, name="trainer-run")
+    running.start()
+
+    settled(lambda: len(wired.checkpointer.during) == 1)
+    wired.trainer.close()
+    running.join(timeout=5.0)
+
+    assert not running.is_alive()
+    assert len(wired.checkpointer.during) == 1
+    assert [save.force for save in wired.checkpointer.saves] == [False, True]
+    assert wired.checkpointer.waits == 1
+    assert all(server.closed for server in wired.replay.built)
+
+
+def test_a_trainer_closed_before_it_starts_takes_no_batch_and_still_lands_its_checkpoint() -> None:
+    wired = build()
+
+    wired.trainer.close()
+    wired.trainer.run()
+
+    assert recorded(wired) == []
+    assert [save.force for save in wired.checkpointer.saves] == [True]
+    assert wired.checkpointer.waits == 1

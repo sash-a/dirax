@@ -30,7 +30,7 @@ from dirax.algorithms.ppo.types import (
     example,
 )
 from dirax.checkpointing.checkpointer import NamedTupleLayout, OrbaxCheckpointer, get_save_path
-from dirax.distributed.components.actor import Actor
+from dirax.distributed.components.actor import Actor, ActorMonitor
 from dirax.distributed.components.checkpointer import CheckpointStore, RayCheckpointer
 from dirax.distributed.components.echo import ReplayServer, echo_example
 from dirax.distributed.components.metrics import RayMetricCollector, default_remote_logger
@@ -87,26 +87,32 @@ def rescaled(env: gym.Env) -> gym.Env:
 
 
 def close(
-    actors: list[ActorProxy[Actor]],
-    actor_futures: list[ObjectRef],
+    actor_monitor: ActorProxy[ActorMonitor],
+    monitor_run: ObjectRef,
     trainer: ActorProxy[Trainer],
+    trainer_run: ObjectRef,
     collector: ActorProxy[RayMetricCollector],
     checkpointer: RayCheckpointer[PPOUpdateState],
     timeout: float = 60,
 ) -> None:
-    """Unwind outwards from what blocks: the Actors, then the servers they send to, then the collector.
+    """Unwind outwards from what blocks: the Actors, then the Trainer they send to, then the collector.
 
     Raises:
-        TimeoutError: An Actor was still running ``timeout`` seconds after being asked to close.
+        TimeoutError: The Actors or the Trainer were still running ``timeout`` seconds after being asked to close.
     """
-    ray.get([actor.close.remote() for actor in actors])
+    actor_monitor.close.remote()
+    actors_stopped, _ = ray.wait([monitor_run], timeout=timeout)
+    if not actors_stopped:
+        raise TimeoutError(f"actors still running {timeout:g}s after close")
+
+    trainer.close.remote()
+    trainer_stopped, _ = ray.wait([trainer_run], timeout=timeout)
+    if not trainer_stopped:
+        raise TimeoutError(f"trainer still running {timeout:g}s after close")
+
     checkpointer.close()
-    stopped, running = ray.wait(actor_futures, num_returns=len(actor_futures), timeout=timeout)
-    ray.get(trainer.close.remote(), timeout=timeout)
     ray.get(collector.close.remote(), timeout=timeout)
-    ray.get(stopped)  # An Actor that died mid-run is a real error, not a quiet one.
-    if running:
-        raise TimeoutError(f"{len(running)}/{len(actors)} actors still running {timeout:g}s after close")
+    ray.get([*actors_stopped, *trainer_stopped])  # Either dying mid-run is a real error, not a quiet one.
 
 
 def main():
@@ -202,7 +208,6 @@ def main():
     # --- Actor ---
     # TODO(actor):
     #  inference server
-    #  healthcheck + restarting (actor group)
     def actor_forward(params: Params, policy_input: PPOPolicyInput, key: PRNGKey) -> PPOPolicyOutput:
         distr, value = apply_fn(params, policy_input, ())
         action = distr.sample(seed=key)
@@ -212,7 +217,6 @@ def main():
     def make_roller(actor_id: int, key: PRNGKey) -> Roller:
         iinfo = jnp.iinfo(jnp.int32)
         seed = jax.device_get(jax.random.randint(key, (), 0, iinfo.max, jnp.int32)).item()
-        # TODO: this needs a mirror per actor and needs to ref the mirror
         param_source = RayParamSource(param_store, actor_id)
         traj_accumulator = TrajectoryAccumulator(example_transition)
         policy = FFPolicy(jax.jit(actor_forward), param_source, key)
@@ -237,20 +241,23 @@ def main():
         )
         for i in actor_ids
     ]
-    preflight([Placed("actor", placements.actor, actor) for actor in actors])
+    actor_monitor = placements.monitor.apply(ActorMonitor).remote(
+        actors, max_restarts=3, metric_recorder=actor_recorder
+    )
+    preflight(
+        [Placed("actor", placements.actor, actor) for actor in actors]
+        + [Placed("monitor", placements.monitor, actor_monitor)]
+    )
 
-    actor_futures = [actor.run.remote() for actor in actors]
+    monitor_run, trainer_run = actor_monitor.run.remote(), trainer.run.remote()
     try:
-        ray.get(trainer.run.remote())
+        done, _ = ray.wait([monitor_run, trainer_run])
+        ray.get(done)
     finally:
         try:
-            close(actors, actor_futures, trainer, collector, checkpointer)
+            close(actor_monitor, monitor_run, trainer, trainer_run, collector, checkpointer)
         finally:
             ray.shutdown()
-
-    # TODO(other):
-    #  checkpointing
-    #  eval
 
 
 if __name__ == "__main__":

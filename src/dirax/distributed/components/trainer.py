@@ -32,7 +32,8 @@ class NeverStop:
 class Trainer[S: UpdateState, T: Trajectory]:
     """Pulls stacked trajectories from an iterator, updates, publishes params."""
 
-    RAY_OPTIONS: ClassVar[Behaviour] = {"max_restarts": 0}
+    RAY_OPTIONS: ClassVar[Behaviour] = {"max_restarts": 0, "max_concurrency": 2}
+    """``run`` holds a thread for the life of the run, so ``stop`` needs the second one."""
 
     def __init__(
         self,
@@ -64,59 +65,71 @@ class Trainer[S: UpdateState, T: Trajectory]:
         self.dataset = replay.dataset(self.replay_servers, data_sharding)
 
         self.stopper = stopper or NeverStop()
+        self.stopping = False
 
     @ray.method
     def run(self) -> None:
-        for i in range(self.num_updates):
-            # Before the update rather than after, so a run told to stop does not pay for one more.
-            if self.stopper.should_stop():
-                break
+        try:
+            for i in range(self.num_updates):
+                # Before the update rather than after, so a run told to stop does not pay for one more.
+                if self.stopping or self.stopper.should_stop():
+                    break
 
-            start_time = time.monotonic()
-            with self.timer("traj_wait_time"):
-                trajectory, roller_version, replay_metrics = next(self.dataset)
+                start_time = time.monotonic()
+                with self.timer("traj_wait_time"):
+                    batch = next(self.dataset, None)
+                if batch is None:  # the replay servers were closed under a run waiting on them
+                    break
+                trajectory, roller_version, replay_metrics = batch
 
-            with self.timer("update_dispatch_time"):
-                self.state, learn_metrics = self.update_fn(self.state, trajectory)
+                with self.timer("update_dispatch_time"):
+                    self.state, learn_metrics = self.update_fn(self.state, trajectory)
 
-            timestep = (i + 1) * self.timesteps_per_update
+                timestep = (i + 1) * self.timesteps_per_update
 
-            # TODO: may need to put this on a thread to fully overlap with the update
-            with self.timer("param_publish_time"):
-                trainer_version = self.param_sink.publish(self.state.params)
+                # TODO: may need to put this on a thread to fully overlap with the update
+                with self.timer("param_publish_time"):
+                    trainer_version = self.param_sink.publish(self.state.params)
 
-            # TODO:
-            # checkpointing with metrics what is useful to add here and adding return in evaluator
-            with self.timer("checkpointing_time"):
-                self.checkpointer.save(i, self.state, None, metadata={"timestep": timestep, "update": i + 1})
+                # TODO:
+                # checkpointing with metrics what is useful to add here and adding return in evaluator
+                with self.timer("checkpointing_time"):
+                    self.checkpointer.save(i, self.state, None, metadata={"timestep": timestep, "update": i + 1})
 
-            sps = self.timesteps_per_update / (time.monotonic() - start_time)
-            versions = {"staleness": np.mean(trainer_version - roller_version)}
-            self.metric_recorder.record(
-                {**replay_metrics, **learn_metrics, **versions, **self.timer.dump(), "learned_steps_per_second": sps}
+                sps = self.timesteps_per_update / (time.monotonic() - start_time)
+                versions = {"staleness": np.mean(trainer_version - roller_version)}
+                self.metric_recorder.record(
+                    {
+                        **replay_metrics,
+                        **learn_metrics,
+                        **versions,
+                        **self.timer.dump(),
+                        "learned_steps_per_second": sps,
+                    }
+                )
+
+            final_timestep = self.num_updates * self.timesteps_per_update
+            self.checkpointer.save(
+                self.num_updates,
+                self.state,
+                None,
+                metadata={"timestep": final_timestep, "update": self.num_updates + 1},
+                force=True,
             )
-
-        final_timestep = self.num_updates * self.timesteps_per_update
-        self.checkpointer.save(
-            self.num_updates,
-            self.state,
-            None,
-            metadata={"timestep": final_timestep, "update": self.num_updates + 1},
-            force=True,
-        )
-        self.checkpointer.wait()
+            self.checkpointer.wait()
+        finally:
+            self.metric_recorder.close()
 
     @ray.method
     def close(self) -> None:
-        """Stops the replay servers and flushes what the metric window still holds.
+        """Asks the loop to stop and returns without waiting for it.
 
-        Called once every Actor has stopped, never before: the servers' drainer threads are what
-        acknowledge an Actor's in-flight sends, and an Actor blocked in ``send`` is waiting on an
-        acknowledgement rather than on anything it can be told to abandon.
+        Servers are closed in this method to allow a blocked trainer to stop waiting for data,
+        but the metric recorder is closed at the end of the run loop to allow for logging of final metrics.
         """
+        self.stopping = True
         for server in self.replay_servers:
             server.close()
-        self.metric_recorder.close()
 
     @ray.method
     def get_replay_addresses(self) -> list[str]:
